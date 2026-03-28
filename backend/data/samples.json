@@ -1,0 +1,142 @@
+[
+  {
+    "task_id": "easy-even-check",
+    "difficulty": "easy",
+    "title": "Broken even-number check",
+    "code": "def is_even(n: int) -> bool:\n    return n % 2 == 1\n",
+    "expected_output": {
+      "explanation": "The function returns True for odd numbers because the modulo comparison is reversed. It should compare against 0 for even numbers.",
+      "required_keyword_groups": [
+        ["odd", "returns true for odd", "reversed condition", "reversed logic"],
+        ["compare against 0", "compare to 0", "== 0", "n % 2 == 0", "should be 0"]
+      ],
+      "partial_keywords": ["bug", "logic", "modulo", "even"]
+    }
+  },
+  {
+    "task_id": "medium-top-scores",
+    "difficulty": "medium",
+    "title": "Top scores logic bug",
+    "code": "def top_scores(scores: list[int]) -> list[int]:\n    ranked = sorted(scores)\n    return ranked[:3]\n",
+    "expected_output": {
+      "explanation": "The function sorts the scores in ascending order and returns the first three values, so it returns the lowest scores instead of the highest. It should sort descending or select the last three items.",
+      "required_keyword_groups": [
+        ["ascending", "lowest", "smallest", "wrong order", "first three"],
+        ["highest", "descending", "reverse=true", "last three", "largest", "top"]
+      ],
+      "partial_keywords": ["sorted", "ranking", "logic bug", "scores"]
+    }
+  },
+  {
+    "task_id": "hard-sql-injection",
+    "difficulty": "hard",
+    "title": "Unsafe user lookup",
+    "code": "import sqlite3\n\n\ndef find_user(conn: sqlite3.Connection, username: str):\n    query = f\"SELECT id, username, is_admin FROM users WHERE username = '{username}'\"\n    return conn.execute(query).fetchone()\n",
+    "expected_output": {
+      "explanation": "The query is vulnerable to SQL injection because user input is interpolated directly into the SQL string. Use a parameterized query with placeholders instead of string formatting.",
+      "required_keyword_groups": [
+        ["sql injection", "injection", "unsafe query", "f-string", "string interpolation"],
+        ["parameterized", "placeholder", "bind parameter", "prepared statement", "execute with parameters"]
+      ],
+      "partial_keywords": ["security", "user input", "sql", "query"]
+    }
+  },
+  {
+    "task_id": "medium-react-stale-closure",
+    "difficulty": "medium",
+    "title": "React stale closure interval",
+    "code": "import { useState, useEffect } from 'react';\n\nfunction Timer() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => {\n      setCount(count + 1);\n    }, 1000);\n    return () => clearInterval(id);\n  }, []);\n\n  return <div>{count}</div>;\n}\n",
+    "expected_output": {
+      "explanation": "The setInterval closure creates a stale reference to `count` at initial render (0), causing it to repeatedly set the count to `0 + 1`. It should use the functional updater form `setCount(prev => prev + 1)` or add `count` to the dependency array.",
+      "required_keyword_groups": [
+        ["stale closure", "stale reference", "closure stale", "old value"],
+        ["functional update", "prev => prev + 1", "dependency array", "add count to dependency"]
+      ],
+      "partial_keywords": ["interval", "react hook", "state", "effect"]
+    }
+  },
+  {
+    "task_id": "hard-go-loop-pointer",
+    "difficulty": "hard",
+    "title": "Go loop variable pointer leak",
+    "code": "package main\n\nimport \"fmt\"\n\ntype User struct { Name string }\n\nfunc main() {\n\tusers := []User{{Name: \"Alice\"}, {Name: \"Bob\"}}\n\tvar ptrs []*User\n\n\tfor _, u := range users {\n\t\tptrs = append(ptrs, &u)\n\t}\n\n\tfor _, p := range ptrs {\n\t\tfmt.Println(p.Name)\n\t}\n}\n",
+    "expected_output": {
+      "explanation": "Prior to Go 1.22, the loop variable `u` is shared across iterations. Taking its address results in `ptrs` containing pointers to the same memory location, meaning it prints the last element repeatedly. The fix is to copy the variable inside the loop: `u := u`.",
+      "required_keyword_groups": [
+        ["loop variable", "shared memory", "same address", "pointer to loop"],
+        ["copy", "u := u", "shadowing", "local variable"]
+      ],
+      "partial_keywords": ["pointer", "golang loop", "reference"]
+    }
+  },
+  {
+    "task_id": "easy-js-strict-eq",
+    "difficulty": "easy",
+    "title": "Type-coercion equality bug",
+    "code": "function isAuthorized(userLevel, reqLevel) {\n  if (userLevel == reqLevel) {\n    return true;\n  }\n  return false;\n}\n",
+    "expected_output": {
+      "explanation": "The loosely equal operator `==` allows type coercion, meaning `\"1\" == 1` or `null == undefined` is true, which is a security oversight for authorization logic. Use the strict equality operator `===` instead.",
+      "required_keyword_groups": [
+        ["type coercion", "loose equality", "==", "coerces"],
+        ["strict equality", "===", "triple equals", "strict equal"]
+      ],
+      "partial_keywords": ["javascript equality", "types", "compare"]
+    }
+  },
+  {
+    "task_id": "hard-python-path-traversal",
+    "difficulty": "hard",
+    "title": "Path Traversal vulnerability",
+    "code": "from fastapi import FastAPI\nimport os\n\napp = FastAPI()\n\n@app.get('/download')\ndef download_file(filename: str):\n  filepath = os.path.join(\"/var/www/uploads\", filename)\n  with open(filepath, \"r\") as f:\n      return f.read()\n",
+    "expected_output": {
+      "explanation": "The code blindly joins user input `filename` into the file path. An attacker can use `../` to access unauthorized files on the server (Directory/Path Traversal). The filename must be sanitized or verified to reside strictly within the uploads directory.",
+      "required_keyword_groups": [
+        ["path traversal", "directory traversal", "../", "unauthorized file"],
+        ["sanitize", "verify path", "secure filename", "absolute path check", "resolve"]
+      ],
+      "partial_keywords": ["os.path.join", "security", "vulnerability"]
+    }
+  },
+  {
+    "task_id": "medium-sql-n-plus-one",
+    "difficulty": "medium",
+    "title": "Django ORM N+1 queries",
+    "code": "from myapp.models import Author\n\ndef get_all_books():\n    authors = Author.objects.all()\n    return [author.book_set.all() for author in authors]\n",
+    "expected_output": {
+      "explanation": "This causes an N+1 query problem because it fetches all authors in one query, but then issues an additional query for each author's books during the list comprehension. It should use `prefetch_related('book_set')` to mitigate the performance hit.",
+      "required_keyword_groups": [
+        ["n+1", "n + 1", "n plus one", "1+n", "multiple queries", "unnecessary queries", "query loop"],
+        ["prefetch_related", "select_related", "join", "eager load"]
+      ],
+      "partial_keywords": ["performance", "django", "orm", "database"]
+    }
+  },
+  {
+    "task_id": "easy-html-button-type",
+    "difficulty": "easy",
+    "title": "Default submit behavior",
+    "code": "<form onsubmit=\"login()\">\n  <input type=\"text\" name=\"user\">\n  <button class=\"action-btn\" onclick=\"cancel()\">Cancel</button>\n  <button class=\"primary-btn\">Login</button>\n</form>\n",
+    "expected_output": {
+      "explanation": "Both buttons will submit the form by default because a `<button>` element inside a `<form>` defaults to `type=\"submit\"`. The Cancel button should explicitly have `type=\"button\"`.",
+      "required_keyword_groups": [
+        ["implicitly submit", "default submit", "type=submit", "form submission"],
+        ["type=\"button\"", "prevent default", "explicit type"]
+      ],
+      "partial_keywords": ["html button", "form", "cancel"]
+    }
+  },
+  {
+    "task_id": "hard-react-infinite-loop",
+    "difficulty": "hard",
+    "title": "React layout infinite loop",
+    "code": "import { useState, useLayoutEffect } from 'react';\n\nfunction Element() {\n  const [width, setWidth] = useState(0);\n\n  useLayoutEffect(() => {\n      setWidth(Math.random() * 100);\n  }, [width]);\n\n  return <div style={{width: width}}>Content</div>;\n}\n",
+    "expected_output": {
+      "explanation": "This creates an infinite render loop. The `useLayoutEffect` depends on `width`, and inside it calls `setWidth`. Since `Math.random` produces a new value every time, it will trigger another layout effect infinitely. The dependency array should be empty or conditional logic must be added.",
+      "required_keyword_groups": [
+        ["infinite loop", "render loop", "endless render", "continuous updates"],
+        ["dependency array", "remove width dependency", "empty array", "conditional update"]
+      ],
+      "partial_keywords": ["useLayoutEffect", "react hooks", "state"]
+    }
+  }
+]

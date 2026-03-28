@@ -1,0 +1,81 @@
+name: code-review-env
+version: "0.1.0"
+description: >-
+  A Python OpenEnv-style environment for training or evaluating agents that review
+  buggy code, explain the problem, and suggest fixes.
+language: python
+entrypoint: backend.env.environment:CodeReviewEnvironment
+action: ReviewAction
+observation: CodeReviewObservation
+reward: RewardState
+apis:
+  reset: reset(task_id: str | None = None) -> CodeReviewObservation
+  step: step(action: ReviewAction) -> tuple[CodeReviewObservation, float, bool, dict]
+  state: state() -> EnvironmentState
+action_schema:
+  type: object
+  properties:
+    review:
+      type: string
+      description: Free-form code review text explaining bugs, risks, or fixes.
+  required:
+    - review
+observation_schema:
+  type: object
+  properties:
+    task_id:
+      type: string
+    difficulty:
+      type: string
+      enum: [easy, medium, hard]
+    title:
+      type: string
+    code:
+      type: string
+    prompt:
+      type: string
+    step_index:
+      type: integer
+  required:
+    - task_id
+    - difficulty
+    - title
+    - code
+    - prompt
+    - step_index
+reward_schema:
+  type: object
+  properties:
+    score:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+    verdict:
+      type: string
+      enum: [full_match, partial_match, wrong]
+    matched_keywords:
+      type: array
+      items:
+        type: string
+    missing_keywords:
+      type: array
+      items:
+        type: string
+    partial_keywords:
+      type: array
+      items:
+        type: string
+    semantic_overlap:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+    rationale:
+      type: string
+  required:
+    - score
+    - verdict
+    - matched_keywords
+    - missing_keywords
+    - partial_keywords
+    - semantic_overlap
+    - rationale

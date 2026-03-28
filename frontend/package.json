@@ -1,0 +1,18 @@
+{
+  "name": "code-review-env-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --host 127.0.0.1 --port 4321",
+    "build": "astro build",
+    "preview": "astro preview --host 0.0.0.0 --port 4321"
+  },
+  "dependencies": {
+    "@astrojs/svelte": "^8.0.4",
+    "astro": "^6.1.1",
+    "canvas-confetti": "^1.9.4",
+    "highlight.js": "^11.11.1",
+    "puppeteer-core": "^24.40.0",
+    "svelte": "^5.55.0"
+  }
+}
