@@ -22,9 +22,14 @@
   let isLoadingTask = false;
   let isSubmitting = false;
   let isRunningBaseline = false;
+  let isGettingOpinion = false;
+  let mode = "review"; // "review" or "fix"
+  let fixCode = "";
   let statusText = "Ready";
+  let secondOpinionText = "";
   let backendLabel = "manual";
   let selectedDifficulty = "all";
+  $: isEvaluating = isSubmitting || isRunningBaseline;
 
   let sessionStats = { totalScore: 0, solvedTasks: new Set(), reviewsGiven: 0 };
   let gradingBackend = "";
@@ -88,6 +93,7 @@
     backendLabel = "manual";
     evaluation = { reward: null, done: null, explanation: "", details: null, state: null, submittedReview: "" };
     typedExplanation = "";
+    secondOpinionText = "";
     clearTimeout(typingTimeout);
   }
 
@@ -111,7 +117,10 @@
       const data = await fetchJson(`/api/tasks/${encodeURIComponent(taskId)}`);
       observation = data.observation;
       currentTaskId = data.observation.task_id;
-      if (!preserveReview) reviewText = "";
+      if (!preserveReview) {
+        reviewText = "";
+        fixCode = data.observation.code;
+      }
       resetEvaluation();
       statusText = "Ready";
     } catch (e) { statusText = "Failed to load scenario."; }
@@ -137,6 +146,25 @@
     finally { isSubmitting = false; }
   }
 
+  async function submitFix() {
+    if (!currentTaskId || !fixCode.trim()) { statusText = "Write some code first."; return; }
+    isSubmitting = true;
+    statusText = "Evaluating Fix...";
+    try {
+      const data = await fetchJson("/api/grade-fix", { method: "POST", body: JSON.stringify({ task_id: currentTaskId, fixed_code: fixCode.trim() }) });
+      backendLabel = "manual";
+      gradingBackend = data.info.grading_backend || "ai_fix";
+      evaluation = { reward: data.reward, done: true, explanation: data.info.expected_explanation, details: data.info.score_details, state: null, submittedReview: fixCode };
+      sessionStats.reviewsGiven += 1;
+      sessionStats.totalScore += data.reward;
+      if (data.reward === 1) { sessionStats.solvedTasks.add(currentTaskId); sessionStats = sessionStats; fireConfetti(); }
+      saveStats();
+      typeOut(data.info.score_details.rationale || "Fix Evaluated.");
+      statusText = `Scored: ${data.info.score_details.verdict.replaceAll("_"," ")} (AI grading)`;
+    } catch (e) { statusText = "Evaluation failed."; }
+    finally { isSubmitting = false; }
+  }
+
   async function runBaseline() {
     if (!currentTaskId) return;
     isRunningBaseline = true;
@@ -155,6 +183,22 @@
       statusText = `AI review: ${data.reward.toFixed(1)} reward (${gradingBackend} grading)`;
     } catch (e) { statusText = "AI review failed."; }
     finally { isRunningBaseline = false; }
+  }
+
+  async function getSecondOpinion() {
+    if (!currentTaskId || !evaluation.submittedReview) return;
+    isGettingOpinion = true;
+    statusText = "Consulting Auditor AI...";
+    secondOpinionText = "Analyzing...";
+    try {
+      const data = await fetchJson("/api/second-opinion", { method: "POST", body: JSON.stringify({ task_id: currentTaskId, review: evaluation.submittedReview }) });
+      secondOpinionText = data.second_opinion;
+      statusText = "Second opinion received";
+    } catch (e) { 
+      secondOpinionText = "Failed to get second opinion.";
+      statusText = "Auditor error";
+    }
+    finally { isGettingOpinion = false; }
   }
 
   function clearReview() { reviewText = ""; resetEvaluation(); }
@@ -264,24 +308,45 @@
       <section class="panel review-panel">
         <div class="panel-header">
           <div>
-            <div class="panel-label">Your Review</div>
-            <h2 class="panel-title">Write your analysis</h2>
+            <div class="panel-label">Submission</div>
+            <div class="mode-toggle">
+              <button class="mode-btn" class:selected={mode === 'review'} on:click={() => mode = 'review'}>Write Review</button>
+              <button class="mode-btn" class:selected={mode === 'fix'} on:click={() => mode = 'fix'}>Fix Code</button>
+            </div>
           </div>
         </div>
-        <textarea
-          bind:value={reviewText}
-          class="review-textarea"
-          placeholder="Explain the bug, why it matters, and what the fix should be..."
-          spellcheck="false"
-          rows="8"
-        ></textarea>
+        
+        {#if mode === 'review'}
+          <textarea
+            bind:value={reviewText}
+            class="review-textarea"
+            placeholder="Explain the bug, why it matters, and what the fix should be..."
+            spellcheck="false"
+            rows="8"
+          ></textarea>
+        {:else}
+          <textarea
+            bind:value={fixCode}
+            class="review-textarea code-font"
+            placeholder="Write the fixed code here..."
+            spellcheck="false"
+            rows="8"
+          ></textarea>
+        {/if}
+
         <div class="review-actions">
-          <button class="btn btn-primary" on:click={submitReview} disabled={isSubmitting}>
-            {isSubmitting ? "Evaluating..." : "Submit Review"}
-          </button>
-          <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
-            {isRunningBaseline ? "Running..." : "Run AI Baseline"}
-          </button>
+          {#if mode === 'review'}
+            <button class="btn btn-primary" on:click={submitReview} disabled={isSubmitting}>
+              {isSubmitting ? "Evaluating..." : "Submit Review"}
+            </button>
+            <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
+              {isRunningBaseline ? "Running..." : "Run AI Baseline"}
+            </button>
+          {:else}
+            <button class="btn btn-primary" on:click={submitFix} disabled={isSubmitting}>
+              {isSubmitting ? "Evaluating Fix..." : "Evaluate Fix"}
+            </button>
+          {/if}
           <button class="btn btn-ghost" on:click={clearReview}>Clear</button>
         </div>
       </section>
@@ -295,7 +360,17 @@
           </div>
         </div>
 
-        {#if evaluation.reward !== null}
+        {#if isEvaluating}
+          <div class="processing-state">
+            <div class="spinner"></div>
+            <p>Analyzing code with AI...</p>
+            <div class="skeleton-lines">
+               <div class="sk-line"></div>
+               <div class="sk-line w-75"></div>
+               <div class="sk-line w-50"></div>
+            </div>
+          </div>
+        {:else if evaluation.reward !== null}
           <div class="score-display {tone}">
             <div class="score-number">{formatReward(evaluation.reward)}</div>
             <div class="score-verdict">{evaluation.details?.verdict?.replaceAll("_"," ") ?? "Evaluated"}</div>
@@ -326,9 +401,20 @@
 
           <div class="eval-meta">
             <div><span>Reviewer</span><strong>{backendLabel}</strong></div>
-            <div><span>Grading</span><strong class="grading-badge {gradingBackend}">{gradingBackend === 'ai' ? '🤖 AI' : '⚙ Keyword'}</strong></div>
+            <div><span>Grading</span><strong class="grading-badge {gradingBackend}">{gradingBackend === 'ai' || gradingBackend === 'ai_fix' ? '🤖 AI' : '⚙ Keyword'}</strong></div>
             <div><span>Overlap</span><strong>{(evaluation.details?.semantic_overlap ?? 0).toFixed(3)}</strong></div>
           </div>
+          
+          {#if secondOpinionText}
+            <div class="eval-section auditor-panel">
+              <div class="eval-label auditor-label">🕵️ Auditor's Second Opinion</div>
+              <p class="auditor-text">{secondOpinionText}</p>
+            </div>
+          {:else}
+            <button class="btn btn-outline auditor-btn" on:click={getSecondOpinion} disabled={isGettingOpinion}>
+               {isGettingOpinion ? "Consulting..." : "Request Second Opinion"}
+            </button>
+          {/if}
         {:else}
           <div class="empty-eval">
             <div class="empty-icon">⬡</div>
@@ -644,6 +730,38 @@
     margin: 0;
   }
 
+  .mode-toggle {
+    display: flex;
+    background: var(--bg-root);
+    border-radius: var(--radius-sm);
+    padding: 3px;
+    margin-top: 6px;
+    border: 1px solid var(--border);
+    width: fit-content;
+  }
+
+  .mode-btn {
+    background: transparent;
+    border: none;
+    padding: 6px 12px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .mode-btn:hover {
+    color: var(--text-secondary);
+  }
+
+  .mode-btn.selected {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+
   .badge {
     font-size: 0.68rem;
     font-weight: 600;
@@ -738,6 +856,11 @@
 
   .review-textarea::placeholder {
     color: var(--text-tertiary);
+  }
+  
+  .review-textarea.code-font {
+    color: #4ade80;
+    font-family: var(--font-mono);
   }
 
   .review-actions {
@@ -934,6 +1057,83 @@
 
   .grading-badge.ai {
     color: var(--accent) !important;
+  }
+
+  /* =================== PROCESSING STATE =================== */
+  .processing-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 24px;
+    gap: 16px;
+    color: var(--text-secondary);
+  }
+
+  .spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(255,255,255,0.1);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .skeleton-lines {
+    width: 60%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .sk-line {
+    height: 10px;
+    border-radius: 5px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
+    background-size: 200% 100%;
+    animation: loading 1.5s infinite;
+  }
+
+  .sk-line.w-75 { width: 75%; }
+  .sk-line.w-50 { width: 50%; }
+
+  @keyframes loading {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* =================== AUDITOR PANEL =================== */
+  .auditor-btn {
+    width: calc(100% - 48px);
+    margin: 16px 24px 24px;
+    border-style: dashed;
+  }
+
+  .auditor-panel {
+    margin: 0 24px 24px;
+    padding: 16px;
+    border-radius: var(--radius-md);
+    background: rgba(234, 179, 8, 0.05); /* Yellow-ish tint */
+    border: 1px solid rgba(234, 179, 8, 0.2);
+  }
+
+  .auditor-label {
+    color: #fbbf24; /* Amber 400 */
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .auditor-text {
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    margin: 0;
   }
 
   /* =================== RESPONSIVE =================== */

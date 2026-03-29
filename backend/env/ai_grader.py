@@ -80,3 +80,106 @@ def ai_grade_review(task: CodeReviewTask, review: str) -> RewardState | None:
     except Exception as exc:
         print(f"[WARN] AI grading failed, falling back to keyword grading: {exc}")
         return None
+
+
+FIX_GRADING_PROMPT = """You are an expert code reviewer evaluating a student's attempt to fix a buggy piece of code.
+
+ORIGINAL BUGGY CODE:
+{original_code}
+
+EXPECTED FIX / CORE ISSUE:
+{expected_explanation}
+
+STUDENT'S SUBMITTED FIX:
+{fixed_code}
+
+Score the fixed code on this scale:
+- 1.0 = The student correctly fixed the core bug without introducing new errors.
+- 0.5 = The student partially addressed the issue but missed edge cases or introduced minor bugs.
+- 0.0 = The student did not fix the bug or broke the intended functionality.
+
+Respond with ONLY valid JSON, no markdown, no code fences:
+{{"score": <0.0 or 0.5 or 1.0>, "verdict": "<full_match or partial_match or wrong>", "rationale": "<1-2 sentence explanation of your grading>", "matched_signals": ["<what they fixed correctly>"], "missing_signals": ["<what they missed or broke>"]}}"""
+
+
+def ai_grade_fix(task: CodeReviewTask, fixed_code: str) -> RewardState | None:
+    """Use Gemini to grade a submitted code fix."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not genai or not api_key:
+        return None
+
+    try:
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+        client = genai.Client(api_key=api_key)
+
+        prompt = FIX_GRADING_PROMPT.format(
+            original_code=task.code,
+            expected_explanation=task.expected_output.explanation,
+            fixed_code=fixed_code,
+        )
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
+
+        raw = response.text.strip()
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        result = json.loads(raw)
+
+        score = float(result.get("score", 0.0))
+        if score not in (0.0, 0.5, 1.0):
+            score = round(score * 2) / 2
+
+        verdict_map = {1.0: "full_match", 0.5: "partial_match", 0.0: "wrong"}
+
+        return RewardState(
+            score=score,
+            verdict=verdict_map.get(score, "wrong"),
+            matched_keywords=result.get("matched_signals", []),
+            missing_keywords=result.get("missing_signals", []),
+            partial_keywords=[],
+            semantic_overlap=score,
+            rationale=result.get("rationale", "AI-evaluated fix."),
+        )
+    except Exception as exc:
+        print(f"[WARN] AI fix grading failed: {exc}")
+        return None
+
+AUDITOR_PROMPT = """You are a strict, veteran Senior Security Auditor known for finding edge cases everyone else misses. 
+A junior developer has reviewed some buggy code. I need you to evaluate their review.
+
+BUGGY CODE:
+{code}
+
+JUNIOR'S REVIEW:
+{student_review}
+
+Analyze the review. Do you agree with it? Did they miss any deeper underlying issues, security risks, or edge cases?
+Respond in 2-4 sentences max. Be direct, authoritative, and slightly critical but constructive. Do not use markdown. Do not write code."""
+
+def ai_second_opinion(task: CodeReviewTask, student_review: str) -> str:
+    """Use Gemini with a strict auditor persona to critique a review."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not genai or not api_key:
+        return "I cannot provide a second opinion because the AI backend is currently unavailable."
+
+    try:
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+        client = genai.Client(api_key=api_key)
+
+        prompt = AUDITOR_PROMPT.format(
+            code=task.code,
+            student_review=student_review,
+        )
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
+
+        return response.text.strip()
+    except Exception as exc:
+        print(f"[WARN] AI second opinion failed: {exc}")
+        return f"The auditor is currently unavailable: {exc}"

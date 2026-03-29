@@ -18,9 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.baseline.run_agent import generate_review
+from backend.env.ai_grader import ai_grade_fix, ai_second_opinion
 from backend.env.environment import CodeReviewEnvironment
 from backend.env.models import ReviewAction
+from backend.baseline.run_agent import generate_review
 from backend.env.tasks import load_tasks
 
 
@@ -70,6 +71,29 @@ def grade_task(task_id: str, review: str) -> dict[str, Any]:
     }
 
 
+def grade_fix_task(task_id: str, fixed_code: str) -> dict[str, Any]:
+    env = build_environment()
+    observation = env.reset(task_id=task_id)
+    
+    # Use AI to grade the fix directly
+    reward_state = ai_grade_fix(env._current_task, fixed_code)
+    if reward_state is None:
+        raise RuntimeError("AI grading unavailable to grade code fixes.")
+        
+    return {
+        "submitted_fixed_code": fixed_code,
+        "observation": asdict(observation),
+        "reward": reward_state.score,
+        "info": {
+            "task_id": task_id,
+            "difficulty": env._current_task.difficulty,
+            "score_details": reward_state.to_dict(),
+            "expected_explanation": env._current_task.expected_output.explanation,
+            "grading_backend": "ai_fix",
+        },
+    }
+
+
 def run_baseline(task_id: str) -> dict[str, Any]:
     env = build_environment()
     observation = env.reset(task_id=task_id)
@@ -84,6 +108,13 @@ def run_baseline(task_id: str) -> dict[str, Any]:
         "info": info,
         "state": env.state().to_dict(),
     }
+
+
+def get_second_opinion(task_id: str, review: str) -> dict[str, Any]:
+    env = build_environment()
+    env.reset(task_id=task_id)
+    critique = ai_second_opinion(env._current_task, review)
+    return {"second_opinion": critique}
 
 
 class CodeReviewSiteHandler(BaseHTTPRequestHandler):
@@ -143,6 +174,24 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
             return
 
+        if path == "/api/grade-fix":
+            task_id = str(payload.get("task_id", "")).strip()
+            fixed_code = str(payload.get("fixed_code", "")).strip()
+            if not task_id:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
+                return
+            if not fixed_code:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "`fixed_code` is required.")
+                return
+            try:
+                self.send_json(grade_fix_task(task_id, fixed_code))
+            except KeyError:
+                self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+            except Exception as exc:
+                print(f"[ERROR] grade-fix failed: {exc}")
+                self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"AI grading failed: {exc}")
+            return
+
         if path == "/api/baseline-review":
             task_id = str(payload.get("task_id", "")).strip()
             if not task_id:
@@ -158,6 +207,18 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
                     HTTPStatus.INTERNAL_SERVER_ERROR,
                     f"AI review failed: {exc}",
                 )
+            return
+
+        if path == "/api/second-opinion":
+            task_id = str(payload.get("task_id", "")).strip()
+            review = str(payload.get("review", "")).strip()
+            if not task_id or not review:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "task_id and review are required.")
+                return
+            try:
+                self.send_json(get_second_opinion(task_id, review))
+            except Exception as exc:
+                self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Second opinion failed: {exc}")
             return
 
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
