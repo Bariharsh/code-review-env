@@ -4,7 +4,6 @@ import argparse
 import json
 import mimetypes
 import sys
-from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,16 +11,17 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.env.ai_grader import ai_grade_fix, ai_second_opinion
+from backend.baseline.run_agent import run_episode_data
+from backend.env.ai_grader import ai_second_opinion
 from backend.env.environment import CodeReviewEnvironment
 from backend.env.models import ReviewAction
-from backend.baseline.run_agent import generate_review
 from backend.env.tasks import load_tasks
 
 
@@ -32,38 +32,100 @@ DIST_ROOT = FRONTEND_ROOT / "dist"
 
 
 def build_environment() -> CodeReviewEnvironment:
+    """Create a fresh environment instance."""
+
     return CodeReviewEnvironment(data_path=DATA_PATH)
 
 
 def list_task_summaries() -> list[dict[str, str]]:
+    """Return the metadata needed by the frontend task list."""
+
     tasks = load_tasks(DATA_PATH)
     return [
         {
             "task_id": task.task_id,
             "difficulty": task.difficulty,
             "title": task.title,
+            "category": task.category,
+            "language": task.language,
         }
         for task in tasks
     ]
 
 
+def task_metadata(task_id: str) -> dict[str, str]:
+    """Return summary metadata for one task."""
+
+    task = next(task for task in load_tasks(DATA_PATH) if task.task_id == task_id)
+    return {
+        "task_id": task.task_id,
+        "difficulty": task.difficulty,
+        "title": task.title,
+        "category": task.category,
+        "language": task.language,
+    }
+
+
 def reset_task(task_id: str) -> dict[str, Any]:
+    """Reset the environment for a task."""
+
     env = build_environment()
     observation = env.reset(task_id=task_id)
     return {
-        "observation": asdict(observation),
+        "task": task_metadata(task_id),
+        "observation": observation.to_dict(),
         "state": env.state().to_dict(),
     }
 
 
-def grade_task(task_id: str, review: str) -> dict[str, Any]:
+def parse_history(payload: dict[str, Any]) -> list[ReviewAction]:
+    """Parse a step history from the request payload."""
+
+    raw_history = payload.get("history", [])
+    if not isinstance(raw_history, list):
+        raise ValueError("`history` must be an array.")
+
+    actions: list[ReviewAction] = []
+    for index, item in enumerate(raw_history):
+        if not isinstance(item, dict):
+            raise ValueError(f"`history[{index}]` must be an object.")
+        action_payload = item.get("action", item)
+        if not isinstance(action_payload, dict):
+            raise ValueError(f"`history[{index}].action` must be an object.")
+        action = ReviewAction.from_dict(action_payload)
+        if not action.content.strip():
+            raise ValueError(f"`history[{index}]` is missing content.")
+        actions.append(action)
+    return actions
+
+
+def replay_history(env: CodeReviewEnvironment, task_id: str, history: list[ReviewAction]) -> None:
+    """Replay prior actions to recover the current multi-step state."""
+
+    env.reset(task_id=task_id)
+    for action in history:
+        env.step(action)
+
+
+def grade_step(task_id: str, action: ReviewAction, history: list[ReviewAction]) -> dict[str, Any]:
+    """Grade one step after replaying the submitted history."""
+
     env = build_environment()
-    observation = env.reset(task_id=task_id)
-    next_observation, reward, done, info = env.step(ReviewAction(review=review))
+    replay_history(env, task_id, history)
+    current_observation = env.state().observation
+    if current_observation is None:
+        raise RuntimeError("Environment did not return an observation.")
+    if env.state().done:
+        raise ValueError("Episode already completed for this history.")
+
+    next_observation, reward, done, info = env.step(action)
     return {
-        "submitted_review": review,
-        "initial_observation": asdict(observation),
-        "observation": asdict(next_observation),
+        "task": task_metadata(task_id),
+        "submitted_action": action.to_dict(),
+        "submitted_review": action.content if action.type == "review" else "",
+        "submitted_fixed_code": action.content if action.type == "fix" else "",
+        "current_observation": current_observation.to_dict(),
+        "observation": next_observation.to_dict(),
         "reward": reward,
         "done": done,
         "info": info,
@@ -71,54 +133,41 @@ def grade_task(task_id: str, review: str) -> dict[str, Any]:
     }
 
 
-def grade_fix_task(task_id: str, fixed_code: str) -> dict[str, Any]:
-    env = build_environment()
-    observation = env.reset(task_id=task_id)
-    
-    # Use AI to grade the fix directly
-    reward_state = ai_grade_fix(env._current_task, fixed_code)
-    if reward_state is None:
-        raise RuntimeError("AI grading unavailable to grade code fixes.")
-        
-    return {
-        "submitted_fixed_code": fixed_code,
-        "observation": asdict(observation),
-        "reward": reward_state.score,
-        "info": {
-            "task_id": task_id,
-            "difficulty": env._current_task.difficulty,
-            "score_details": reward_state.to_dict(),
-            "expected_explanation": env._current_task.expected_output.explanation,
-            "grading_backend": "ai_fix",
-        },
-    }
+def grade_task(task_id: str, review: str, history: list[ReviewAction]) -> dict[str, Any]:
+    """Compatibility wrapper for review-mode submissions."""
+
+    return grade_step(task_id, ReviewAction(type="review", content=review), history)
+
+
+def grade_fix_task(task_id: str, fixed_code: str, history: list[ReviewAction]) -> dict[str, Any]:
+    """Compatibility wrapper for fix-mode submissions."""
+
+    return grade_step(task_id, ReviewAction(type="fix", content=fixed_code), history)
 
 
 def run_baseline(task_id: str) -> dict[str, Any]:
-    env = build_environment()
-    observation = env.reset(task_id=task_id)
-    review_text, backend = generate_review(observation)
-    next_observation, reward, done, info = env.step(ReviewAction(review=review_text))
-    return {
-        "submitted_review": review_text,
-        "backend": backend,
-        "observation": asdict(next_observation),
-        "reward": reward,
-        "done": done,
-        "info": info,
-        "state": env.state().to_dict(),
-    }
+    """Run the multi-step baseline agent on one task."""
+
+    result = run_episode_data(task_id=task_id, data_path=DATA_PATH, max_steps=3)
+    result["task"] = task_metadata(task_id)
+    return result
 
 
 def get_second_opinion(task_id: str, review: str) -> dict[str, Any]:
+    """Get an optional AI critique of the user's reasoning."""
+
     env = build_environment()
     env.reset(task_id=task_id)
-    critique = ai_second_opinion(env._current_task, review)
+    if env.current_task is None:
+        raise RuntimeError("Task not loaded.")
+    critique = ai_second_opinion(env.current_task, review)
     return {"second_opinion": critique}
 
 
 class CodeReviewSiteHandler(BaseHTTPRequestHandler):
-    server_version = "CodeReviewEnvHTTP/0.1"
+    """Serve the frontend and a small JSON API."""
+
+    server_version = "CodeReviewEnvHTTP/0.2"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -140,7 +189,7 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             task_id = unquote(path.removeprefix("/api/tasks/"))
             try:
                 self.send_json(reset_task(task_id))
-            except KeyError:
+            except (KeyError, StopIteration):
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
             return
 
@@ -159,71 +208,126 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
+        if path == "/api/step":
+            self.handle_step(payload)
+            return
+
         if path == "/api/review":
-            task_id = str(payload.get("task_id", "")).strip()
-            review = str(payload.get("review", "")).strip()
-            if not task_id:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
-                return
-            if not review:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "`review` is required.")
-                return
-            try:
-                self.send_json(grade_task(task_id, review))
-            except KeyError:
-                self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+            self.handle_review(payload)
             return
 
         if path == "/api/grade-fix":
-            task_id = str(payload.get("task_id", "")).strip()
-            fixed_code = str(payload.get("fixed_code", "")).strip()
-            if not task_id:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
-                return
-            if not fixed_code:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "`fixed_code` is required.")
-                return
-            try:
-                self.send_json(grade_fix_task(task_id, fixed_code))
-            except KeyError:
-                self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
-            except Exception as exc:
-                print(f"[ERROR] grade-fix failed: {exc}")
-                self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"AI grading failed: {exc}")
+            self.handle_fix(payload)
             return
 
         if path == "/api/baseline-review":
-            task_id = str(payload.get("task_id", "")).strip()
-            if not task_id:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
-                return
-            try:
-                self.send_json(run_baseline(task_id))
-            except KeyError:
-                self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
-            except Exception as exc:
-                print(f"[ERROR] baseline-review failed: {exc}")
-                self.send_error_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    f"AI review failed: {exc}",
-                )
+            self.handle_baseline(payload)
             return
 
         if path == "/api/second-opinion":
-            task_id = str(payload.get("task_id", "")).strip()
-            review = str(payload.get("review", "")).strip()
-            if not task_id or not review:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "task_id and review are required.")
-                return
-            try:
-                self.send_json(get_second_opinion(task_id, review))
-            except Exception as exc:
-                self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Second opinion failed: {exc}")
+            self.handle_second_opinion(payload)
             return
 
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
 
+    def handle_step(self, payload: dict[str, Any]) -> None:
+        """Handle a generic multi-step environment action."""
+
+        task_id = str(payload.get("task_id", "")).strip()
+        action_payload = payload.get("action")
+        if not task_id:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
+            return
+        if not isinstance(action_payload, dict):
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`action` is required.")
+            return
+
+        try:
+            history = parse_history(payload)
+            action = ReviewAction.from_dict(action_payload)
+            if not action.content.strip():
+                raise ValueError("`action.content` is required.")
+            self.send_json(grade_step(task_id, action, history))
+        except (KeyError, StopIteration):
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+        except RuntimeError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_review(self, payload: dict[str, Any]) -> None:
+        """Handle a review-phase submission."""
+
+        task_id = str(payload.get("task_id", "")).strip()
+        review = str(payload.get("review", "")).strip()
+        if not task_id:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
+            return
+        if not review:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`review` is required.")
+            return
+
+        try:
+            history = parse_history(payload)
+            self.send_json(grade_task(task_id, review, history))
+        except (KeyError, StopIteration):
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_fix(self, payload: dict[str, Any]) -> None:
+        """Handle a fix-phase submission."""
+
+        task_id = str(payload.get("task_id", "")).strip()
+        fixed_code = str(payload.get("fixed_code", "")).strip()
+        if not task_id:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
+            return
+        if not fixed_code:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`fixed_code` is required.")
+            return
+
+        try:
+            history = parse_history(payload)
+            self.send_json(grade_fix_task(task_id, fixed_code, history))
+        except (KeyError, StopIteration):
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_baseline(self, payload: dict[str, Any]) -> None:
+        """Run the full baseline flow for one task."""
+
+        task_id = str(payload.get("task_id", "")).strip()
+        if not task_id:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`task_id` is required.")
+            return
+
+        try:
+            self.send_json(run_baseline(task_id))
+        except (KeyError, StopIteration):
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+        except Exception as exc:
+            print(f"[ERROR] baseline-review failed: {exc}")
+            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"AI review failed: {exc}")
+
+    def handle_second_opinion(self, payload: dict[str, Any]) -> None:
+        """Request an AI auditor critique."""
+
+        task_id = str(payload.get("task_id", "")).strip()
+        review = str(payload.get("review", "")).strip()
+        if not task_id or not review:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "task_id and review are required.")
+            return
+
+        try:
+            self.send_json(get_second_opinion(task_id, review))
+        except Exception as exc:
+            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Second opinion failed: {exc}")
+
     def serve_file(self, path: Path) -> None:
+        """Serve a static asset."""
+
         if not path.exists() or not path.is_file():
             self.send_error_json(HTTPStatus.NOT_FOUND, "File not found.")
             return
@@ -238,6 +342,8 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def serve_frontend_index(self) -> None:
+        """Serve the built frontend."""
+
         index_path = DIST_ROOT / "index.html"
         if not index_path.exists():
             self.send_missing_frontend_message()
@@ -245,6 +351,8 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         self.serve_file(index_path)
 
     def try_serve_frontend_asset(self, request_path: str) -> bool:
+        """Serve a frontend asset if it exists."""
+
         if not DIST_ROOT.exists():
             return False
 
@@ -264,11 +372,13 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         return False
 
     def send_missing_frontend_message(self) -> None:
+        """Return a helpful message when the built frontend is absent."""
+
         message = (
             "<!doctype html><html><body style=\"font-family: sans-serif; padding: 2rem;\">"
             "<h1>Frontend build not found</h1>"
             "<p>Run <code>npm install</code> and <code>npm run build</code> inside "
-            "<code>code-review-env/frontend</code>, then refresh this page.</p>"
+            "<code>frontend</code>, then refresh this page.</p>"
             "</body></html>"
         ).encode("utf-8")
         self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
@@ -278,6 +388,8 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         self.wfile.write(message)
 
     def read_json(self) -> dict[str, Any]:
+        """Read a JSON request body."""
+
         content_length = self.headers.get("Content-Length")
         if content_length is None:
             raise ValueError("Missing Content-Length header.")
@@ -298,6 +410,8 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         return payload
 
     def send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        """Write a JSON response."""
+
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -307,13 +421,19 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def send_error_json(self, status: HTTPStatus, message: str) -> None:
+        """Write a JSON error response."""
+
         self.send_json({"error": message}, status=status)
 
     def log_message(self, format: str, *args: Any) -> None:
+        """Keep server logs compact."""
+
         print(f"[web] {self.address_string()} - {format % args}")
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the HTTP server."""
+
     parser = argparse.ArgumentParser(description="Run the Code Review Environment website.")
     parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on.")
@@ -321,6 +441,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Server entrypoint."""
+
     args = parse_args()
     server = ThreadingHTTPServer((args.host, args.port), CodeReviewSiteHandler)
     print(f"Serving Code Review Environment at http://{args.host}:{args.port}")

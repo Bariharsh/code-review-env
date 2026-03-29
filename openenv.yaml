@@ -1,8 +1,7 @@
 name: code-review-env
-version: "0.1.0"
+version: "0.2.0"
 description: >-
-  A Python OpenEnv-style environment for training or evaluating agents that review
-  buggy code, explain the problem, and suggest fixes.
+  A multi-step AI training environment for code review, bug explanation, and fix generation.
 language: python
 entrypoint: backend.env.environment:CodeReviewEnvironment
 action: ReviewAction
@@ -15,11 +14,16 @@ apis:
 action_schema:
   type: object
   properties:
-    review:
+    type:
       type: string
-      description: Free-form code review text explaining bugs, risks, or fixes.
+      enum: [review, fix]
+      description: Whether the agent is submitting reasoning or corrected code.
+    content:
+      type: string
+      description: Free-form review text or corrected code for the current phase.
   required:
-    - review
+    - type
+    - content
 observation_schema:
   type: object
   properties:
@@ -34,7 +38,15 @@ observation_schema:
       type: string
     prompt:
       type: string
+    phase:
+      type: string
+      enum: [identify_bug, explain_issue, fix_code]
+    expected_action_type:
+      type: string
+      enum: [review, fix]
     step_index:
+      type: integer
+    remaining_steps:
       type: integer
   required:
     - task_id
@@ -42,17 +54,37 @@ observation_schema:
     - title
     - code
     - prompt
+    - phase
+    - expected_action_type
     - step_index
+    - remaining_steps
 reward_schema:
   type: object
   properties:
     score:
       type: number
-      minimum: 0.0
+      minimum: -0.5
       maximum: 1.0
     verdict:
       type: string
       enum: [full_match, partial_match, wrong]
+    breakdown:
+      type: object
+      properties:
+        bug_detected:
+          type: number
+        explanation:
+          type: number
+        fix:
+          type: number
+        structure_bonus:
+          type: number
+        irrelevant_penalty:
+          type: number
+        hallucinated_fix_penalty:
+          type: number
+        total:
+          type: number
     matched_keywords:
       type: array
       items:
@@ -61,21 +93,33 @@ reward_schema:
       type: array
       items:
         type: string
-    partial_keywords:
-      type: array
-      items:
-        type: string
     semantic_overlap:
       type: number
-      minimum: 0.0
-      maximum: 1.0
     rationale:
       type: string
+    feedback:
+      type: string
+    phase:
+      type: string
+      enum: [identify_bug, explain_issue, fix_code]
+    expected_action_type:
+      type: string
+      enum: [review, fix]
+    action_type:
+      type: string
+      enum: [review, fix]
+    step_index:
+      type: integer
   required:
     - score
     - verdict
+    - breakdown
     - matched_keywords
     - missing_keywords
-    - partial_keywords
     - semantic_overlap
     - rationale
+    - feedback
+    - phase
+    - expected_action_type
+    - action_type
+    - step_index

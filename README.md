@@ -1,63 +1,244 @@
-# Code Review Environment
+# Code Review OpenEnv Environment
 
-`code-review-env` is an AI-powered code review training platform built with Python, Astro, and Svelte. Each scenario presents buggy code, expects a natural-language review from the user (or an AI agent), and returns a deterministic reward based on how well the review identifies the issue and fix.
+`code-review-env` is a multi-step AI training environment for realistic code review practice. Instead of treating code review as a single free-form answer, it teaches the full workflow teams actually need:
 
-The environment follows a Gym-like interface:
+1. identify the bug or vulnerability
+2. explain why it matters
+3. submit a correct fix
 
-- `reset()` selects a task and returns the initial observation.
-- `step(action)` grades the review and returns `(observation, reward, done, info)`.
-- `state()` returns the typed internal environment state.
+The project ships with a browser UI, a Gym-like Python environment, a deterministic grader with reward shaping, and a baseline AI agent that can run full episodes end to end.
 
-## Features
+## Problem Statement
 
-- **10 Real-World Scenarios** — Python bugs, SQL injection, React stale closures, Go pointer leaks, Django N+1 queries, path traversal vulnerabilities, and more
-- **AI-Powered Baseline Reviewer** — Integrated with **Google Gemini API** (free tier) for real-time AI code reviews
-- **Deterministic Grading** — Keyword-based + semantic overlap scoring (0.0 / 0.5 / 1.0)
-- **Gamified Session Tracking** — Live score, accuracy, solved count, and confetti on perfect reviews
-- **Premium Dark UI** — Modern SaaS-style workspace built with Astro + Svelte
+Most code review benchmarks are too shallow:
+
+- they reward keyword spotting instead of reasoning
+- they collapse review and fixing into one turn
+- they hide why a score was assigned
+- they do not resemble real production bugs
+
+This project closes that gap by turning code review into a structured training environment with transparent scoring and real-world software scenarios.
+
+## Why This Matters
+
+In real teams, strong code review prevents:
+
+- security incidents like SQL injection, path traversal, and weak authentication
+- reliability failures like infinite loops and listener leaks
+- performance regressions like N+1 queries and quadratic sorting
+- subtle product bugs like stale closures and broken form behavior
+
+That makes this environment useful for:
+
+- benchmarking agent reasoning
+- reinforcement learning or preference-tuning loops
+- hackathon demos for AI-assisted engineering
+- onboarding developers into secure review habits
+
+## What’s New In This Upgrade
+
+- Multi-step environment with `identify_bug -> explain_issue -> fix_code`
+- Dual action modes: `review` and `fix`
+- Advanced deterministic grader with weighted partial credit
+- Reward shaping with penalties for irrelevant submissions and hallucinated fixes
+- Real-world scenario library with explicit bug, explanation, and fix signals
+- Step-by-step score transparency in both API responses and UI
+- Baseline agent that completes the entire workflow, not just a single review
+
+## Architecture
+
+```text
+User / Baseline Agent
+        |
+        v
+Frontend (Astro + Svelte)
+  - task browser
+  - step-by-step submission UI
+  - transparent scorecard
+        |
+        v
+Python HTTP API (backend/server.py)
+  - /api/tasks
+  - /api/step
+  - /api/baseline-review
+  - /api/second-opinion
+        |
+        v
+CodeReviewEnvironment (backend/env/environment.py)
+  - reset(task_id)
+  - replay(history)
+  - step(action)
+        |
+        v
+Advanced Grader (backend/env/grader.py)
+  - regex-backed signal matching
+  - weighted partial scoring
+  - penalties + structured-answer bonus
+        |
+        v
+Task Dataset (backend/data/samples.json)
+  - bug keywords
+  - explanation keywords
+  - fix keywords
+  - reference explanation / fix
+```
+
+## Reward System
+
+Each episode is worth up to `1.0` total reward:
+
+- `+0.3` bug detection
+- `+0.3` explanation quality
+- `+0.4` fix correctness
+
+Reward shaping:
+
+- `-0.2` irrelevant answer or wrong action mode for the current phase
+- `-0.3` hallucinated fix that changes code but misses the expected remedy
+- up to `+0.05` structure bonus inside a phase without exceeding the phase cap
+
+The grader returns a transparent breakdown such as:
+
+```json
+{
+  "bug_detected": 0.3,
+  "explanation": 0.2,
+  "fix": 0.4,
+  "structure_bonus": 0.0,
+  "irrelevant_penalty": 0.0,
+  "hallucinated_fix_penalty": 0.0,
+  "total": 0.9
+}
+```
+
+## Scenario Library
+
+The upgraded dataset includes real-world tasks across security, reliability, frontend behavior, and performance:
+
+- SQL injection
+- insecure plaintext authentication
+- quadratic sorting / O(n^2) performance bug
+- repeated listener registration memory leak
+- React stale closure
+- React infinite render loop
+- Django ORM N+1 query pattern
+- path traversal
+- Go range-loop pointer bug
+- HTML button submit behavior
+- basic correctness regression
+
+Each task contains:
+
+```json
+{
+  "code": "...",
+  "bug_keywords": ["..."],
+  "explanation_keywords": ["..."],
+  "fix_keywords": ["..."]
+}
+```
+
+## Example Interaction
+
+Python API:
+
+```python
+from backend.env.environment import CodeReviewEnvironment
+from backend.env.models import ReviewAction
+
+env = CodeReviewEnvironment()
+obs = env.reset(task_id="hard-sql-injection")
+
+obs, reward, done, info = env.step(
+    ReviewAction(
+        type="review",
+        content="This is SQL injection because the query is built with an f-string."
+    )
+)
+
+obs, reward, done, info = env.step(
+    ReviewAction(
+        type="review",
+        content="User input can alter the SQL statement and change the WHERE clause."
+    )
+)
+
+obs, reward, done, info = env.step(
+    ReviewAction(
+        type="fix",
+        content='''
+import sqlite3
+
+def find_user(conn: sqlite3.Connection, username: str):
+    query = "SELECT id, username, is_admin FROM users WHERE username = ?"
+    return conn.execute(query, (username,)).fetchone()
+'''.strip()
+    )
+)
+
+print(info["cumulative_breakdown"])
+print(env.state().cumulative_reward)
+```
+
+Example CLI baseline run:
+
+```bash
+python3 backend/baseline/run_agent.py --task-id hard-sql-injection
+```
+
+That prints each phase, the submitted content, the step reward, the verdict, and the cumulative breakdown.
 
 ## Project Layout
 
 ```text
 code-review-env/
 ├── backend/
-│   ├── server.py              # Python HTTP server (API + static files)
-│   ├── .env.example           # Environment variable template
-│   ├── env/
-│   │   ├── environment.py     # Gym-like environment
-│   │   ├── grader.py          # Deterministic grading logic
-│   │   ├── models.py          # Typed dataclass models
-│   │   └── tasks.py           # Task loader
+│   ├── server.py
 │   ├── baseline/
-│   │   └── run_agent.py       # AI baseline reviewer (Gemini / OpenAI / mock)
-│   └── data/
-│       └── samples.json       # 10 coding scenarios
+│   │   └── run_agent.py
+│   ├── data/
+│   │   └── samples.json
+│   └── env/
+│       ├── ai_grader.py
+│       ├── environment.py
+│       ├── grader.py
+│       ├── models.py
+│       └── tasks.py
 ├── frontend/
 │   ├── package.json
-│   ├── astro.config.mjs
 │   └── src/
-│       ├── components/        # ReviewWorkbench.svelte
-│       ├── layouts/           # BaseLayout.astro
-│       ├── pages/             # index.astro
-│       └── styles/            # global.css
+│       ├── components/ReviewWorkbench.svelte
+│       ├── layouts/BaseLayout.astro
+│       ├── pages/index.astro
+│       └── styles/global.css
 ├── openenv.yaml
 ├── Dockerfile
 └── README.md
 ```
 
-## Quick Start
+## Local Run
 
-### 1. Set up the backend
+### 1. Configure environment variables
 
 ```bash
-# Copy the environment template and add your API key
 cp backend/.env.example backend/.env
-# Edit backend/.env and add your Gemini API key
 ```
 
-Get a free Gemini API key from: https://aistudio.google.com/apikey
+Optional AI backends:
 
-### 2. Build the frontend
+```bash
+# Gemini
+GEMINI_API_KEY=your-key
+GEMINI_MODEL=gemini-2.0-flash-lite
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+```
+
+If no API keys are configured, the baseline agent uses a deterministic built-in mock strategy.
+
+### 2. Install frontend dependencies and build
 
 ```bash
 cd frontend
@@ -66,135 +247,75 @@ npm run build
 cd ..
 ```
 
-### 3. Start the server
+### 3. Start the app
 
 ```bash
-python backend/server.py
+python3 backend/server.py
 ```
 
-Open http://127.0.0.1:8000
+Open:
 
-## AI Integration
+- `http://127.0.0.1:8000` for the built app
 
-The baseline reviewer supports multiple AI backends with automatic fallback:
+### Frontend development mode
 
-| Priority | Backend | Environment Variables | Cost |
-|----------|---------|----------------------|------|
-| 1st | **Google Gemini** | `GEMINI_API_KEY` | **Free tier available** |
-| 2nd | OpenAI | `OPENAI_API_KEY` + `OPENAI_MODEL` | Paid |
-| 3rd | Mock | (none needed) | Free |
-
-### Gemini Setup (Recommended — Free)
+Backend:
 
 ```bash
-# backend/.env
-GEMINI_API_KEY=your-key-from-aistudio
-GEMINI_MODEL=gemini-2.0-flash-lite
+python3 backend/server.py
 ```
 
-### OpenAI Setup (Optional — Paid)
+Frontend:
 
-```bash
-# backend/.env
-OPENAI_API_KEY=sk-your-key
-OPENAI_MODEL=gpt-4o-mini
-```
-
-If no API keys are configured, the baseline automatically uses a built-in mock reviewer that returns pattern-matched responses.
-
-## Grading Logic
-
-The grader in [`grader.py`](./backend/env/grader.py) is deterministic:
-
-- **`1.0` (Full Match)** — the review hits every required keyword group
-- **`0.5` (Partial Match)** — the review identifies part of the issue or overlaps meaningfully with the reference
-- **`0.0` (Miss)** — the review does not identify the core issue
-
-The `info` dictionary includes matched keywords, missing keywords, semantic overlap, and the reference explanation.
-
-## Scenarios
-
-| Difficulty | Title | Language |
-|-----------|-------|----------|
-| Easy | Broken even-number check | Python |
-| Easy | Type-coercion equality bug | JavaScript |
-| Easy | Default submit behavior | HTML |
-| Medium | Top scores logic bug | Python |
-| Medium | React stale closure interval | React/JSX |
-| Medium | Django ORM N+1 queries | Python/Django |
-| Hard | Unsafe user lookup (SQL injection) | Python/SQL |
-| Hard | Go loop variable pointer leak | Go |
-| Hard | Path Traversal vulnerability | Python/FastAPI |
-| Hard | React layout infinite loop | React/JSX |
-
-## Frontend Development
-
-For hot-reload during frontend development:
-
-**Terminal 1** — Backend:
-```bash
-python backend/server.py
-```
-
-**Terminal 2** — Frontend dev server:
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
-Open http://127.0.0.1:4321 — the Astro dev server proxies `/api` calls to the Python backend.
+Open:
 
-## CLI Usage
-
-Run the baseline reviewer from the command line:
-
-```bash
-# Run all tasks
-python backend/baseline/run_agent.py
-
-# Run a single task
-python backend/baseline/run_agent.py --task-id hard-sql-injection
-
-# Custom dataset with multiple steps
-python backend/baseline/run_agent.py --data-path backend/data/samples.json --max-steps 2
-```
-
-## Python API Example
-
-```python
-from backend.env.environment import CodeReviewEnvironment
-from backend.env.models import ReviewAction
-
-env = CodeReviewEnvironment()
-observation = env.reset(task_id="easy-even-check")
-observation, reward, done, info = env.step(
-    ReviewAction(review="The modulo condition is reversed; use n % 2 == 0.")
-)
-
-print(f"Reward: {reward}")  # 1.0
-print(f"Verdict: {info['score_details']['verdict']}")  # full_match
-```
+- `http://127.0.0.1:4321`
 
 ## Docker
 
+Build:
+
 ```bash
-# Build
 docker build -t code-review-env .
+```
 
-# Run CLI
-docker run --rm code-review-env
+Run the website:
 
-# Run with Gemini
-docker run --rm \
-  -e GEMINI_API_KEY=$GEMINI_API_KEY \
-  code-review-env
+```bash
+docker run --rm -p 8000:8000 code-review-env python3 backend/server.py --host 0.0.0.0 --port 8000
+```
 
-# Run website
+Run with Gemini:
+
+```bash
 docker run --rm -p 8000:8000 \
   -e GEMINI_API_KEY=$GEMINI_API_KEY \
-  code-review-env python backend/server.py --host 0.0.0.0 --port 8000
+  -e GEMINI_MODEL=gemini-2.0-flash-lite \
+  code-review-env python3 backend/server.py --host 0.0.0.0 --port 8000
 ```
+
+Run the baseline CLI in Docker:
+
+```bash
+docker run --rm code-review-env python3 backend/baseline/run_agent.py --task-id hard-sql-injection
+```
+
+## API Notes
+
+Key endpoints:
+
+- `GET /api/tasks` returns task metadata
+- `GET /api/tasks/:task_id` resets a task and returns the first observation
+- `POST /api/step` advances the environment with `{ task_id, action, history }`
+- `POST /api/baseline-review` runs the full 3-step baseline agent
+- `POST /api/second-opinion` requests an optional AI critique
+
+The API is intentionally stateless. The frontend sends prior actions back as `history`, and the backend replays them to recover the current episode state.
 
 ## License
 

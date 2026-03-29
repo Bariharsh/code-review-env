@@ -46,7 +46,7 @@ def ai_grade_review(task: CodeReviewTask, review: str) -> RewardState | None:
 
         prompt = GRADING_PROMPT.format(
             code=task.code,
-            expected_explanation=task.expected_output.explanation,
+            expected_explanation=task.rubric.explanation,
             student_review=review,
         )
 
@@ -114,7 +114,7 @@ def ai_grade_fix(task: CodeReviewTask, fixed_code: str) -> RewardState | None:
 
         prompt = FIX_GRADING_PROMPT.format(
             original_code=task.code,
-            expected_explanation=task.expected_output.explanation,
+            expected_explanation=task.rubric.explanation,
             fixed_code=fixed_code,
         )
 
