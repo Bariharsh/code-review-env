@@ -27,6 +27,24 @@
   let selectedDifficulty = "all";
 
   let sessionStats = { totalScore: 0, solvedTasks: new Set(), reviewsGiven: 0 };
+  let gradingBackend = "";
+
+  function saveStats() {
+    try {
+      const data = { totalScore: sessionStats.totalScore, solvedTasks: [...sessionStats.solvedTasks], reviewsGiven: sessionStats.reviewsGiven };
+      localStorage.setItem('cr_session', JSON.stringify(data));
+    } catch(e) {}
+  }
+
+  function loadStats() {
+    try {
+      const raw = localStorage.getItem('cr_session');
+      if (raw) {
+        const data = JSON.parse(raw);
+        sessionStats = { totalScore: data.totalScore || 0, solvedTasks: new Set(data.solvedTasks || []), reviewsGiven: data.reviewsGiven || 0 };
+      }
+    } catch(e) {}
+  }
 
   $: filteredTasks = selectedDifficulty === "all" ? tasks : tasks.filter(t => t.difficulty === selectedDifficulty);
 
@@ -107,12 +125,14 @@
     try {
       const data = await fetchJson("/api/review", { method: "POST", body: JSON.stringify({ task_id: currentTaskId, review: reviewText.trim() }) });
       backendLabel = "manual";
+      gradingBackend = data.info.grading_backend || "keyword";
       evaluation = { reward: data.reward, done: data.done, explanation: data.info.expected_explanation, details: data.info.score_details, state: data.state, submittedReview: data.submitted_review };
       sessionStats.reviewsGiven += 1;
       sessionStats.totalScore += data.reward;
       if (data.reward === 1) { sessionStats.solvedTasks.add(currentTaskId); sessionStats = sessionStats; fireConfetti(); }
-      typeOut(data.info.expected_explanation);
-      statusText = `Scored: ${data.info.score_details.verdict.replaceAll("_"," ")}`;
+      saveStats();
+      typeOut(data.info.score_details.rationale || data.info.expected_explanation);
+      statusText = `Scored: ${data.info.score_details.verdict.replaceAll("_"," ")} (${gradingBackend} grading)`;
     } catch (e) { statusText = "Evaluation failed."; }
     finally { isSubmitting = false; }
   }
@@ -124,13 +144,15 @@
     try {
       const data = await fetchJson("/api/baseline-review", { method: "POST", body: JSON.stringify({ task_id: currentTaskId }) });
       backendLabel = data.backend;
+      gradingBackend = data.info.grading_backend || "keyword";
       reviewText = data.submitted_review;
       evaluation = { reward: data.reward, done: data.done, explanation: data.info.expected_explanation, details: data.info.score_details, state: data.state, submittedReview: data.submitted_review };
       sessionStats.reviewsGiven += 1;
       sessionStats.totalScore += data.reward;
       if (data.reward === 1) { sessionStats.solvedTasks.add(currentTaskId); sessionStats = sessionStats; fireConfetti(); }
-      typeOut(data.info.expected_explanation);
-      statusText = `AI review: ${data.reward.toFixed(1)} reward`;
+      saveStats();
+      typeOut(data.info.score_details.rationale || data.info.expected_explanation);
+      statusText = `AI review: ${data.reward.toFixed(1)} reward (${gradingBackend} grading)`;
     } catch (e) { statusText = "AI review failed."; }
     finally { isRunningBaseline = false; }
   }
@@ -144,7 +166,10 @@
   $: highlightedCode = observation ? hljs.highlightAuto(observation.code).value : "";
   $: tone = evaluation.reward === 1 ? "green" : evaluation.reward === 0.5 ? "yellow" : evaluation.reward === 0 ? "red" : "neutral";
 
-  onMount(() => loadTasks());
+  onMount(() => {
+    loadStats();
+    loadTasks();
+  });
 </script>
 
 <!-- ===== HEADER ===== -->
@@ -277,7 +302,7 @@
           </div>
 
           <div class="eval-section">
-            <div class="eval-label">Expected Rationale</div>
+            <div class="eval-label">AI Rationale</div>
             <p class="typewriter-text">{typedExplanation}</p>
           </div>
 
@@ -300,7 +325,8 @@
           </div>
 
           <div class="eval-meta">
-            <div><span>Backend</span><strong>{backendLabel}</strong></div>
+            <div><span>Reviewer</span><strong>{backendLabel}</strong></div>
+            <div><span>Grading</span><strong class="grading-badge {gradingBackend}">{gradingBackend === 'ai' ? '🤖 AI' : '⚙ Keyword'}</strong></div>
             <div><span>Overlap</span><strong>{(evaluation.details?.semantic_overlap ?? 0).toFixed(3)}</strong></div>
           </div>
         {:else}
@@ -900,6 +926,14 @@
     max-width: 24ch;
     margin: 0;
     line-height: 1.5;
+  }
+
+  .grading-badge {
+    font-size: 0.75rem !important;
+  }
+
+  .grading-badge.ai {
+    color: var(--accent) !important;
   }
 
   /* =================== RESPONSIVE =================== */

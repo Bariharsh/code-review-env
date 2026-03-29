@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from .ai_grader import ai_grade_review
 from .grader import grade_review
 from .models import CodeReviewObservation, EnvironmentState, ReviewAction
 from .tasks import get_task_by_id, load_tasks
@@ -55,7 +56,13 @@ class CodeReviewEnvironment:
         if self._state.done:
             raise RuntimeError("Episode is done. Call reset() before stepping again.")
 
-        reward_state = grade_review(self._current_task, action.review)
+        # Try AI grading first, fall back to deterministic keyword grading
+        grading_backend = "ai"
+        reward_state = ai_grade_review(self._current_task, action.review)
+        if reward_state is None:
+            grading_backend = "keyword"
+            reward_state = grade_review(self._current_task, action.review)
+
         next_step_count = self._state.step_count + 1
         done = next_step_count >= self.max_steps
 
@@ -74,6 +81,7 @@ class CodeReviewEnvironment:
             "difficulty": self._current_task.difficulty,
             "score_details": reward_state.to_dict(),
             "expected_explanation": self._current_task.expected_output.explanation,
+            "grading_backend": grading_backend,
         }
         return observation, reward_state.score, done, info
 
