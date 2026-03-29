@@ -15,18 +15,25 @@ from backend.env.models import CodeReviewObservation, ReviewAction
 
 try:
     from openai import OpenAI
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError:
     OpenAI = None
+
+try:
+    from google import genai
+except ImportError:
+    genai = None
 
 
 def build_prompt(observation: CodeReviewObservation) -> str:
     return (
-        f"{observation.prompt}\n\n"
+        "You are a senior code reviewer. Be extremely concise — reply in 2-3 sentences MAX.\n"
+        "1) Name the bug or vulnerability in one sentence.\n"
+        "2) Explain why it's wrong in one sentence.\n"
+        "3) State the fix in one sentence.\n"
+        "Do NOT write code. Do NOT use markdown. Do NOT add examples.\n\n"
         f"Task: {observation.title}\n"
         f"Difficulty: {observation.difficulty}\n\n"
-        "Code:\n"
-        f"{observation.code}\n\n"
-        "Explain the bug or risk, and suggest a fix."
+        f"Code:\n{observation.code}\n"
     )
 
 
@@ -73,8 +80,26 @@ def mock_review(observation: CodeReviewObservation) -> str:
     )
 
 
+def should_use_gemini() -> bool:
+    return bool(genai and os.getenv("GEMINI_API_KEY"))
+
+
 def should_use_openai() -> bool:
     return bool(OpenAI and os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_MODEL"))
+
+
+def gemini_review(observation: CodeReviewObservation) -> str:
+    if genai is None:
+        raise RuntimeError("The google-genai package is not installed.")
+
+    api_key = os.environ["GEMINI_API_KEY"]
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model_name,
+        contents=build_prompt(observation),
+    )
+    return response.text.strip()
 
 
 def openai_review(observation: CodeReviewObservation) -> str:
@@ -88,6 +113,8 @@ def openai_review(observation: CodeReviewObservation) -> str:
 
 
 def generate_review(observation: CodeReviewObservation) -> tuple[str, str]:
+    if should_use_gemini():
+        return gemini_review(observation), "gemini"
     if should_use_openai():
         return openai_review(observation), "openai"
     return mock_review(observation), "mock"

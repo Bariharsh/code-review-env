@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from dotenv import load_dotenv
+load_dotenv()
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -149,6 +152,12 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
                 self.send_json(run_baseline(task_id))
             except KeyError:
                 self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+            except Exception as exc:
+                print(f"[ERROR] baseline-review failed: {exc}")
+                self.send_error_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    f"AI review failed: {exc}",
+                )
             return
 
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
