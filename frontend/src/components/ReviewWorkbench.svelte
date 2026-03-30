@@ -1016,10 +1016,10 @@
   }
 
   .main-content {
-    padding: 24px;
+    padding: 20px;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
     overflow-y: auto;
   }
 
@@ -1034,9 +1034,9 @@
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    padding: 20px 24px;
+    padding: 18px 20px;
     border-bottom: 1px solid var(--border);
-    gap: 16px;
+    gap: 14px;
   }
 
   .panel-label {
@@ -1081,7 +1081,7 @@
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 8px;
-    padding: 16px 24px 0;
+    padding: 14px 20px 0;
   }
 
   .step-pill {
@@ -1134,8 +1134,8 @@
   }
 
   .prompt-card {
-    margin: 16px 24px 0;
-    padding: 16px 18px;
+    margin: 14px 20px 0;
+    padding: 14px 16px;
     border: 1px solid rgba(59, 130, 246, 0.18);
     border-radius: var(--radius-md);
     background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(245, 158, 11, 0.06));
@@ -1176,7 +1176,7 @@
   .code-frame {
     background: #0c0c0e;
     border-radius: var(--radius-md);
-    margin: 16px;
+    margin: 14px;
     overflow: hidden;
     border: 1px solid var(--border);
   }
@@ -1209,7 +1209,7 @@
 
   .code-block {
     margin: 0;
-    padding: 20px;
+    padding: 18px;
     overflow-x: auto;
     font-family: var(--font-mono);
     font-size: 0.88rem;
@@ -1219,8 +1219,19 @@
 
   .two-col {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
+    grid-template-columns: minmax(360px, 0.92fr) minmax(420px, 1.08fr);
+    gap: 16px;
+    align-items: start;
+  }
+
+  .review-panel,
+  .eval-panel {
+    min-width: 0;
+  }
+
+  .review-panel {
+    position: sticky;
+    top: 16px;
   }
 
   .mode-toggle {
@@ -1250,7 +1261,7 @@
   }
 
   .submission-note {
-    padding: 14px 24px 0;
+    padding: 12px 20px 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -1266,14 +1277,14 @@
     width: 100%;
     background: var(--bg-input);
     border: none;
-    padding: 20px 24px;
+    padding: 18px 20px;
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 0.88rem;
     line-height: 1.65;
     resize: vertical;
     outline: none;
-    min-height: 220px;
+    min-height: 180px;
     transition: background 0.2s;
   }
 
@@ -1288,7 +1299,7 @@
   .review-actions {
     display: flex;
     gap: 8px;
-    padding: 14px 24px;
+    padding: 12px 20px;
     border-top: 1px solid var(--border);
     background: rgba(255,255,255,0.015);
   }
@@ -1326,7 +1337,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 28px 24px 20px;
+    padding: 22px 20px 16px;
     gap: 6px;
   }
 
@@ -1360,7 +1371,7 @@
   }
 
   .eval-section {
-    padding: 16px 24px;
+    padding: 14px 20px;
     border-top: 1px solid var(--border);
   }
 
@@ -1462,7 +1473,7 @@
     border: 1px solid var(--border);
     background: rgba(255,255,255,0.02);
     border-radius: var(--radius-md);
-    padding: 14px;
+    padding: 12px;
   }
 
   .history-top {
@@ -1510,7 +1521,7 @@
   .eval-meta {
     display: flex;
     gap: 20px;
-    padding: 16px 24px;
+    padding: 14px 20px;
     border-top: 1px solid var(--border);
     background: rgba(255,255,255,0.01);
   }
@@ -1565,13 +1576,13 @@
   }
 
   .auditor-btn {
-    width: calc(100% - 48px);
-    margin: 16px 24px 24px;
+    width: calc(100% - 40px);
+    margin: 14px 20px 20px;
     border-style: dashed;
   }
 
   .auditor-panel {
-    margin: 0 24px 24px;
+    margin: 0 20px 20px;
     padding: 16px;
     border-radius: var(--radius-md);
     background: rgba(245, 158, 11, 0.06);
@@ -1603,6 +1614,10 @@
 
     .two-col {
       grid-template-columns: 1fr;
+    }
+
+    .review-panel {
+      position: static;
     }
 
     .topbar-center {
