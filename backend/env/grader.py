@@ -108,11 +108,15 @@ def compile_signal_pattern(signal: str) -> re.Pattern[str]:
 def signal_matches(text: str, normalized_text: str, signal: str) -> bool:
     """Return True when a signal matches either raw or normalized text."""
 
+    stripped_signal = signal.strip()
     pattern = compile_signal_pattern(signal)
     if pattern.search(text):
         return True
 
-    normalized_signal = normalize_text(signal.removeprefix("re:"))
+    if stripped_signal.startswith("re:"):
+        return False
+
+    normalized_signal = normalize_text(stripped_signal)
     if not normalized_signal:
         return False
 
@@ -241,7 +245,12 @@ def positive_phase_score(
     if phase == "explain_issue" and has_reasoning_language(action.content):
         coverage = min(1.0, coverage + 0.20)
 
-    if phase == "fix_code" and looks_like_code_submission(action.content) and has_meaningful_change(task.code, action.content):
+    if (
+        phase == "fix_code"
+        and coverage > 0.0
+        and looks_like_code_submission(action.content)
+        and has_meaningful_change(task.code, action.content)
+    ):
         coverage = min(1.0, coverage + 0.10)
 
     return round(phase_weight(phase) * coverage, 3), matched, missing, overlap

@@ -92,7 +92,7 @@ def parse_history(payload: dict[str, Any]) -> list[ReviewAction]:
         action_payload = item.get("action", item)
         if not isinstance(action_payload, dict):
             raise ValueError(f"`history[{index}].action` must be an object.")
-        action = ReviewAction.from_dict(action_payload)
+        action = ReviewAction.from_dict(action_payload, field_prefix=f"history[{index}].action")
         if not action.content.strip():
             raise ValueError(f"`history[{index}]` is missing content.")
         actions.append(action)
@@ -244,7 +244,7 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
 
         try:
             history = parse_history(payload)
-            action = ReviewAction.from_dict(action_payload)
+            action = ReviewAction.from_dict(action_payload, field_prefix="action")
             if not action.content.strip():
                 raise ValueError("`action.content` is required.")
             self.send_json(grade_step(task_id, action, history))
@@ -307,9 +307,11 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             self.send_json(run_baseline(task_id))
         except (KeyError, StopIteration):
             self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
         except Exception as exc:
-            print(f"[ERROR] baseline-review failed: {exc}")
-            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"AI review failed: {exc}")
+            print(f"[ERROR] baseline-review failed: {exc!r}")
+            self.send_error_json(HTTPStatus.BAD_GATEWAY, "AI review failed.")
 
     def handle_second_opinion(self, payload: dict[str, Any]) -> None:
         """Request an AI auditor critique."""
@@ -322,8 +324,13 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
 
         try:
             self.send_json(get_second_opinion(task_id, review))
+        except (KeyError, StopIteration):
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
         except Exception as exc:
-            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Second opinion failed: {exc}")
+            print(f"[ERROR] second-opinion failed: {exc!r}")
+            self.send_error_json(HTTPStatus.BAD_GATEWAY, "Second opinion unavailable.")
 
     def serve_file(self, path: Path) -> None:
         """Serve a static asset."""
@@ -425,10 +432,10 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
 
         self.send_json({"error": message}, status=status)
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, message_format: str, *args: Any) -> None:
         """Keep server logs compact."""
 
-        print(f"[web] {self.address_string()} - {format % args}")
+        print(f"[web] {self.address_string()} - {message_format % args}")
 
 
 def parse_args() -> argparse.Namespace:

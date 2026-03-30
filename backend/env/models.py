@@ -22,6 +22,91 @@ EXPECTED_ACTION_BY_PHASE: dict[StepPhase, ActionType] = {
 }
 
 
+def _string_list(value: Any, field_name: str) -> list[str]:
+    """Validate and normalize a list of keyword strings."""
+
+    if not isinstance(value, list):
+        raise ValueError(f"`{field_name}` must be an array of strings.")
+
+    normalized: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(f"`{field_name}[{index}]` must be a string.")
+        text = item.strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _string_field(data: dict[str, Any], key: str, field_name: str, default: str = "") -> str:
+    """Read a string field without silently coercing malformed task data."""
+
+    if key not in data:
+        return default
+
+    value = data[key]
+    if not isinstance(value, str):
+        raise ValueError(f"`{field_name}` must be a string.")
+    return value
+
+
+def _string_list_field(data: dict[str, Any], key: str, field_name: str) -> list[str]:
+    """Read a keyword list field when present."""
+
+    if key not in data:
+        return []
+    return _string_list(data[key], field_name)
+
+
+def _phase_keyword_field(data: dict[str, Any], base_field: str, aliases: tuple[str, ...]) -> list[str]:
+    """Read one phase's keywords from a phase-keyword mapping."""
+
+    for alias in aliases:
+        if alias in data:
+            return _string_list(data[alias], f"{base_field}.{alias}")
+    return []
+
+
+def _expected_output_keywords(expected_output: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    """Extract phase-aware keywords from the compatibility schema."""
+
+    if "phase_keywords" in expected_output:
+        phase_keywords = expected_output["phase_keywords"]
+        if not isinstance(phase_keywords, dict):
+            raise ValueError("`expected_output.phase_keywords` must be an object.")
+
+        return (
+            _phase_keyword_field(phase_keywords, "expected_output.phase_keywords", ("identify_bug", "bug")),
+            _phase_keyword_field(phase_keywords, "expected_output.phase_keywords", ("explain_issue", "explanation")),
+            _phase_keyword_field(phase_keywords, "expected_output.phase_keywords", ("fix_code", "fix")),
+        )
+
+    if "required_keyword_groups" in expected_output and "bug_keywords" not in expected_output and "fix_keywords" not in expected_output:
+        raise ValueError(
+            "`expected_output.required_keyword_groups` is ambiguous for multi-step grading. "
+            "Provide phase-specific `bug_keywords`, `explanation_keywords`, and `fix_keywords` instead."
+        )
+
+    bug_keywords = _string_list_field(expected_output, "bug_keywords", "expected_output.bug_keywords")
+    explanation_keywords = _string_list_field(
+        expected_output,
+        "explanation_keywords",
+        "expected_output.explanation_keywords",
+    )
+    if not explanation_keywords and "partial_keywords" in expected_output:
+        explanation_keywords = _string_list_field(
+            expected_output,
+            "partial_keywords",
+            "expected_output.partial_keywords",
+        )
+    fix_keywords = _string_list_field(expected_output, "fix_keywords", "expected_output.fix_keywords")
+
+    if bug_keywords or explanation_keywords or fix_keywords:
+        return bug_keywords, explanation_keywords, fix_keywords
+
+    return [], [], []
+
+
 @dataclass(slots=True)
 class ReviewAction:
     """An agent action submitted to the environment."""
@@ -30,13 +115,25 @@ class ReviewAction:
     content: str
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ReviewAction":
-        action_type = str(data.get("type", "review")).strip().lower() or "review"
+    def from_dict(cls, data: dict[str, Any], *, field_prefix: str = "action") -> "ReviewAction":
+        if "type" not in data:
+            raise ValueError(f"`{field_prefix}.type` is required.")
+
+        raw_type = data["type"]
+        if not isinstance(raw_type, str):
+            raise ValueError(f"`{field_prefix}.type` must be a string.")
+
+        action_type = raw_type.strip().lower()
         if action_type not in {"review", "fix"}:
-            action_type = "review"
+            raise ValueError(f"`{field_prefix}.type` must be either 'review' or 'fix'.")
+
+        content = data.get("content", "")
+        if not isinstance(content, str):
+            raise ValueError(f"`{field_prefix}.content` must be a string.")
+
         return cls(
             type=action_type,
-            content=str(data.get("content", "")),
+            content=content,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -144,26 +241,44 @@ class ReviewRubric:
     def from_dict(cls, data: dict[str, Any]) -> "ReviewRubric":
         if "expected_output" in data:
             expected_output = data["expected_output"]
-            required_groups = [
-                keyword
-                for group in expected_output.get("required_keyword_groups", [])
-                for keyword in group
-            ]
-            partial_keywords = [str(keyword) for keyword in expected_output.get("partial_keywords", [])]
+            if not isinstance(expected_output, dict):
+                raise ValueError("`expected_output` must be an object.")
+
+            bug_keywords, explanation_keywords, fix_keywords = _expected_output_keywords(expected_output)
             return cls(
-                explanation=str(expected_output.get("explanation", "")),
-                bug_keywords=required_groups[: max(1, len(required_groups) // 2)],
-                explanation_keywords=partial_keywords,
-                fix_keywords=required_groups[max(1, len(required_groups) // 2) :],
-                reference_fix=str(expected_output.get("reference_fix", "")),
+                explanation=_string_field(
+                    expected_output,
+                    "explanation",
+                    "expected_output.explanation",
+                    default=_string_field(
+                        data,
+                        "reference_explanation",
+                        "reference_explanation",
+                        default=_string_field(data, "explanation", "explanation"),
+                    ),
+                ),
+                bug_keywords=bug_keywords,
+                explanation_keywords=explanation_keywords,
+                fix_keywords=fix_keywords,
+                reference_fix=_string_field(
+                    expected_output,
+                    "reference_fix",
+                    "expected_output.reference_fix",
+                    default=_string_field(data, "reference_fix", "reference_fix"),
+                ),
             )
 
         return cls(
-            explanation=str(data.get("reference_explanation", data.get("explanation", ""))),
-            bug_keywords=[str(keyword) for keyword in data.get("bug_keywords", [])],
-            explanation_keywords=[str(keyword) for keyword in data.get("explanation_keywords", [])],
-            fix_keywords=[str(keyword) for keyword in data.get("fix_keywords", [])],
-            reference_fix=str(data.get("reference_fix", "")),
+            explanation=_string_field(
+                data,
+                "reference_explanation",
+                "reference_explanation",
+                default=_string_field(data, "explanation", "explanation"),
+            ),
+            bug_keywords=_string_list_field(data, "bug_keywords", "bug_keywords"),
+            explanation_keywords=_string_list_field(data, "explanation_keywords", "explanation_keywords"),
+            fix_keywords=_string_list_field(data, "fix_keywords", "fix_keywords"),
+            reference_fix=_string_field(data, "reference_fix", "reference_fix"),
         )
 
 
