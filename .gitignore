@@ -14,8 +14,9 @@ venv/
 
 # Node
 node_modules/
-frontend/dist/
 frontend/.astro/
+!frontend/dist/
+!frontend/dist/**
 
 # IDE
 .vscode/

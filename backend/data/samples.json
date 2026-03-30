@@ -3,140 +3,275 @@
     "task_id": "easy-even-check",
     "difficulty": "easy",
     "title": "Broken even-number check",
+    "category": "correctness",
+    "language": "python",
     "code": "def is_even(n: int) -> bool:\n    return n % 2 == 1\n",
-    "expected_output": {
-      "explanation": "The function returns True for odd numbers because the modulo comparison is reversed. It should compare against 0 for even numbers.",
-      "required_keyword_groups": [
-        ["odd", "returns true for odd", "reversed condition", "reversed logic"],
-        ["compare against 0", "compare to 0", "== 0", "n % 2 == 0", "should be 0"]
-      ],
-      "partial_keywords": ["bug", "logic", "modulo", "even"]
-    }
+    "reference_explanation": "The function reverses the parity check. `n % 2 == 1` identifies odd numbers, so the function returns false for even values and true for odd values.",
+    "reference_fix": "def is_even(n: int) -> bool:\n    return n % 2 == 0\n",
+    "bug_keywords": [
+      "returns true for odd numbers",
+      "reversed modulo condition",
+      "n % 2 == 1"
+    ],
+    "explanation_keywords": [
+      "even numbers produce 0 modulo 2",
+      "the boolean result is flipped",
+      "false for even inputs"
+    ],
+    "fix_keywords": [
+      "n % 2 == 0",
+      "compare against 0",
+      "return n % 2 == 0"
+    ]
   },
   {
-    "task_id": "medium-top-scores",
+    "task_id": "medium-inefficient-sorting",
     "difficulty": "medium",
-    "title": "Top scores logic bug",
-    "code": "def top_scores(scores: list[int]) -> list[int]:\n    ranked = sorted(scores)\n    return ranked[:3]\n",
-    "expected_output": {
-      "explanation": "The function sorts the scores in ascending order and returns the first three values, so it returns the lowest scores instead of the highest. It should sort descending or select the last three items.",
-      "required_keyword_groups": [
-        ["ascending", "lowest", "smallest", "wrong order", "first three"],
-        ["highest", "descending", "reverse=true", "last three", "largest", "top"]
-      ],
-      "partial_keywords": ["sorted", "ranking", "logic bug", "scores"]
-    }
+    "title": "Quadratic top-three ranking",
+    "category": "performance",
+    "language": "python",
+    "code": "def top_three(users: list[dict]) -> list[dict]:\n    items = users[:]\n    for i in range(len(items)):\n        for j in range(len(items) - 1):\n            if items[j][\"score\"] < items[j + 1][\"score\"]:\n                items[j], items[j + 1] = items[j + 1], items[j]\n    return items[:3]\n",
+    "reference_explanation": "The function uses a nested-loop bubble sort just to get the top three scores. That makes the work O(n^2), which is wasteful for large datasets when Python already provides better options.",
+    "reference_fix": "def top_three(users: list[dict]) -> list[dict]:\n    return sorted(users, key=lambda user: user[\"score\"], reverse=True)[:3]\n",
+    "bug_keywords": [
+      "bubble sort",
+      "nested loop sorting",
+      "o(n^2)"
+    ],
+    "explanation_keywords": [
+      "quadratic time complexity",
+      "too many unnecessary comparisons",
+      "slow on large lists"
+    ],
+    "fix_keywords": [
+      "sorted(",
+      "key=lambda",
+      "reverse=True"
+    ]
   },
   {
     "task_id": "hard-sql-injection",
     "difficulty": "hard",
     "title": "Unsafe user lookup",
+    "category": "security",
+    "language": "python",
     "code": "import sqlite3\n\n\ndef find_user(conn: sqlite3.Connection, username: str):\n    query = f\"SELECT id, username, is_admin FROM users WHERE username = '{username}'\"\n    return conn.execute(query).fetchone()\n",
-    "expected_output": {
-      "explanation": "The query is vulnerable to SQL injection because user input is interpolated directly into the SQL string. Use a parameterized query with placeholders instead of string formatting.",
-      "required_keyword_groups": [
-        ["sql injection", "injection", "unsafe query", "f-string", "string interpolation"],
-        ["parameterized", "placeholder", "bind parameter", "prepared statement", "execute with parameters"]
-      ],
-      "partial_keywords": ["security", "user input", "sql", "query"]
-    }
+    "reference_explanation": "The query is vulnerable to SQL injection because user input is interpolated directly into the SQL string. An attacker can break out of the quoted value and change the query logic.",
+    "reference_fix": "import sqlite3\n\n\ndef find_user(conn: sqlite3.Connection, username: str):\n    query = \"SELECT id, username, is_admin FROM users WHERE username = ?\"\n    return conn.execute(query, (username,)).fetchone()\n",
+    "bug_keywords": [
+      "sql injection",
+      "string interpolation in query",
+      "f-string query"
+    ],
+    "explanation_keywords": [
+      "user input changes the sql statement",
+      "attacker can manipulate the where clause",
+      "database query becomes unsafe"
+    ],
+    "fix_keywords": [
+      "username = ?",
+      "execute(query, (username,))",
+      "parameterized query"
+    ]
+  },
+  {
+    "task_id": "hard-insecure-authentication",
+    "difficulty": "hard",
+    "title": "Plaintext password authentication",
+    "category": "security",
+    "language": "python",
+    "code": "def authenticate(username: str, password: str, users: dict[str, dict[str, str]]) -> bool:\n    record = users.get(username)\n    if not record:\n        return False\n    return record[\"password\"] == password\n",
+    "reference_explanation": "The code compares raw plaintext passwords, which implies the application is storing or handling passwords in plaintext. If the credential store leaks, attackers can immediately reuse those secrets elsewhere.",
+    "reference_fix": "import bcrypt\n\n\ndef authenticate(username: str, password: str, users: dict[str, dict[str, bytes]]) -> bool:\n    record = users.get(username)\n    if not record:\n        return False\n    return bcrypt.checkpw(password.encode(\"utf-8\"), record[\"password_hash\"])\n",
+    "bug_keywords": [
+      "plaintext password",
+      "raw password comparison",
+      "insecure authentication"
+    ],
+    "explanation_keywords": [
+      "passwords are not hashed or salted",
+      "credential leaks expose reusable secrets",
+      "plaintext comparison is unsafe"
+    ],
+    "fix_keywords": [
+      "bcrypt",
+      "checkpw",
+      "password_hash"
+    ]
   },
   {
     "task_id": "medium-react-stale-closure",
     "difficulty": "medium",
     "title": "React stale closure interval",
+    "category": "frontend",
+    "language": "react",
     "code": "import { useState, useEffect } from 'react';\n\nfunction Timer() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => {\n      setCount(count + 1);\n    }, 1000);\n    return () => clearInterval(id);\n  }, []);\n\n  return <div>{count}</div>;\n}\n",
-    "expected_output": {
-      "explanation": "The setInterval closure creates a stale reference to `count` at initial render (0), causing it to repeatedly set the count to `0 + 1`. It should use the functional updater form `setCount(prev => prev + 1)` or add `count` to the dependency array.",
-      "required_keyword_groups": [
-        ["stale closure", "stale reference", "closure stale", "old value"],
-        ["functional update", "prev => prev + 1", "dependency array", "add count to dependency"]
-      ],
-      "partial_keywords": ["interval", "react hook", "state", "effect"]
-    }
+    "reference_explanation": "The interval callback closes over the initial `count` value, so each tick computes `0 + 1` again. The component needs either a functional state update or a dependency-aware effect.",
+    "reference_fix": "import { useState, useEffect } from 'react';\n\nfunction Timer() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => {\n      setCount((prev) => prev + 1);\n    }, 1000);\n    return () => clearInterval(id);\n  }, []);\n\n  return <div>{count}</div>;\n}\n",
+    "bug_keywords": [
+      "stale closure",
+      "count is captured from the first render",
+      "setCount(count + 1)"
+    ],
+    "explanation_keywords": [
+      "the interval keeps using the old state value",
+      "count gets stuck around 1",
+      "the callback does not see fresh state"
+    ],
+    "fix_keywords": [
+      "setCount((prev) => prev + 1)",
+      "functional updater",
+      "prev + 1"
+    ]
   },
   {
-    "task_id": "hard-go-loop-pointer",
-    "difficulty": "hard",
-    "title": "Go loop variable pointer leak",
-    "code": "package main\n\nimport \"fmt\"\n\ntype User struct { Name string }\n\nfunc main() {\n\tusers := []User{{Name: \"Alice\"}, {Name: \"Bob\"}}\n\tvar ptrs []*User\n\n\tfor _, u := range users {\n\t\tptrs = append(ptrs, &u)\n\t}\n\n\tfor _, p := range ptrs {\n\t\tfmt.Println(p.Name)\n\t}\n}\n",
-    "expected_output": {
-      "explanation": "Prior to Go 1.22, the loop variable `u` is shared across iterations. Taking its address results in `ptrs` containing pointers to the same memory location, meaning it prints the last element repeatedly. The fix is to copy the variable inside the loop: `u := u`.",
-      "required_keyword_groups": [
-        ["loop variable", "shared memory", "same address", "pointer to loop"],
-        ["copy", "u := u", "shadowing", "local variable"]
-      ],
-      "partial_keywords": ["pointer", "golang loop", "reference"]
-    }
-  },
-  {
-    "task_id": "easy-js-strict-eq",
-    "difficulty": "easy",
-    "title": "Type-coercion equality bug",
-    "code": "function isAuthorized(userLevel, reqLevel) {\n  if (userLevel == reqLevel) {\n    return true;\n  }\n  return false;\n}\n",
-    "expected_output": {
-      "explanation": "The loosely equal operator `==` allows type coercion, meaning `\"1\" == 1` or `null == undefined` is true, which is a security oversight for authorization logic. Use the strict equality operator `===` instead.",
-      "required_keyword_groups": [
-        ["type coercion", "loose equality", "==", "coerces"],
-        ["strict equality", "===", "triple equals", "strict equal"]
-      ],
-      "partial_keywords": ["javascript equality", "types", "compare"]
-    }
+    "task_id": "medium-listener-memory-leak",
+    "difficulty": "medium",
+    "title": "Repeated event listener registration",
+    "category": "reliability",
+    "language": "javascript",
+    "code": "function subscribe(socket, onMessage) {\n  setInterval(() => {\n    socket.on(\"message\", onMessage);\n  }, 1000);\n}\n",
+    "reference_explanation": "The function registers the same event listener every second and never removes old listeners. That creates a memory leak and causes the message handler to fire multiple times for one event.",
+    "reference_fix": "function subscribe(socket, onMessage) {\n  socket.on(\"message\", onMessage);\n  return () => socket.off(\"message\", onMessage);\n}\n",
+    "bug_keywords": [
+      "event listener leak",
+      "registers the same listener repeatedly",
+      "memory leak"
+    ],
+    "explanation_keywords": [
+      "handlers stack up over time",
+      "one message triggers duplicate callbacks",
+      "memory usage grows unnecessarily"
+    ],
+    "fix_keywords": [
+      "socket.off",
+      "register the listener once",
+      "return () => socket.off"
+    ]
   },
   {
     "task_id": "hard-python-path-traversal",
     "difficulty": "hard",
     "title": "Path Traversal vulnerability",
-    "code": "from fastapi import FastAPI\nimport os\n\napp = FastAPI()\n\n@app.get('/download')\ndef download_file(filename: str):\n  filepath = os.path.join(\"/var/www/uploads\", filename)\n  with open(filepath, \"r\") as f:\n      return f.read()\n",
-    "expected_output": {
-      "explanation": "The code blindly joins user input `filename` into the file path. An attacker can use `../` to access unauthorized files on the server (Directory/Path Traversal). The filename must be sanitized or verified to reside strictly within the uploads directory.",
-      "required_keyword_groups": [
-        ["path traversal", "directory traversal", "../", "unauthorized file"],
-        ["sanitize", "verify path", "secure filename", "absolute path check", "resolve"]
-      ],
-      "partial_keywords": ["os.path.join", "security", "vulnerability"]
-    }
+    "category": "security",
+    "language": "python",
+    "code": "from fastapi import FastAPI\nimport os\n\napp = FastAPI()\n\n@app.get('/download')\ndef download_file(filename: str):\n  filepath = os.path.join('/var/www/uploads', filename)\n  with open(filepath, 'r') as f:\n      return f.read()\n",
+    "reference_explanation": "The code blindly joins user input into a filesystem path. Attackers can use `../` segments to escape the uploads directory and read arbitrary files from the server.",
+    "reference_fix": "from fastapi import FastAPI, HTTPException\nfrom pathlib import Path\n\napp = FastAPI()\nUPLOAD_ROOT = Path('/var/www/uploads').resolve()\n\n@app.get('/download')\ndef download_file(filename: str):\n    candidate = (UPLOAD_ROOT / filename).resolve()\n    if not candidate.is_relative_to(UPLOAD_ROOT):\n        raise HTTPException(status_code=400, detail='invalid filename')\n    return candidate.read_text()\n",
+    "bug_keywords": [
+      "path traversal",
+      "../",
+      "directory traversal"
+    ],
+    "explanation_keywords": [
+      "user input can escape the upload directory",
+      "attackers can read arbitrary files",
+      "the joined path is not validated"
+    ],
+    "fix_keywords": [
+      ".resolve()",
+      "is_relative_to",
+      "validate the path stays under the upload root"
+    ]
   },
   {
     "task_id": "medium-sql-n-plus-one",
     "difficulty": "medium",
     "title": "Django ORM N+1 queries",
+    "category": "performance",
+    "language": "python",
     "code": "from myapp.models import Author\n\ndef get_all_books():\n    authors = Author.objects.all()\n    return [author.book_set.all() for author in authors]\n",
-    "expected_output": {
-      "explanation": "This causes an N+1 query problem because it fetches all authors in one query, but then issues an additional query for each author's books during the list comprehension. It should use `prefetch_related('book_set')` to mitigate the performance hit.",
-      "required_keyword_groups": [
-        ["n+1", "n + 1", "n plus one", "1+n", "multiple queries", "unnecessary queries", "query loop"],
-        ["prefetch_related", "select_related", "join", "eager load"]
-      ],
-      "partial_keywords": ["performance", "django", "orm", "database"]
-    }
+    "reference_explanation": "This creates an N+1 query pattern: one query for authors, then another query for each author's books. The loop magnifies latency and load as the dataset grows.",
+    "reference_fix": "from myapp.models import Author\n\ndef get_all_books():\n    authors = Author.objects.prefetch_related('book_set')\n    return [author.book_set.all() for author in authors]\n",
+    "bug_keywords": [
+      "n+1 query",
+      "one query per author",
+      "query in a loop"
+    ],
+    "explanation_keywords": [
+      "database round trips grow with the number of authors",
+      "performance degrades as data grows",
+      "extra queries are unnecessary"
+    ],
+    "fix_keywords": [
+      "prefetch_related",
+      "eager load related books",
+      "Author.objects.prefetch_related"
+    ]
   },
   {
     "task_id": "easy-html-button-type",
     "difficulty": "easy",
     "title": "Default submit behavior",
+    "category": "frontend",
+    "language": "html",
     "code": "<form onsubmit=\"login()\">\n  <input type=\"text\" name=\"user\">\n  <button class=\"action-btn\" onclick=\"cancel()\">Cancel</button>\n  <button class=\"primary-btn\">Login</button>\n</form>\n",
-    "expected_output": {
-      "explanation": "Both buttons will submit the form by default because a `<button>` element inside a `<form>` defaults to `type=\"submit\"`. The Cancel button should explicitly have `type=\"button\"`.",
-      "required_keyword_groups": [
-        ["implicitly submit", "default submit", "type=submit", "form submission"],
-        ["type=\"button\"", "prevent default", "explicit type"]
-      ],
-      "partial_keywords": ["html button", "form", "cancel"]
-    }
+    "reference_explanation": "Buttons inside a form default to `type=\"submit\"`. That means the cancel button submits the form unexpectedly unless its type is set explicitly.",
+    "reference_fix": "<form onsubmit=\"login()\">\n  <input type=\"text\" name=\"user\">\n  <button type=\"button\" class=\"action-btn\" onclick=\"cancel()\">Cancel</button>\n  <button type=\"submit\" class=\"primary-btn\">Login</button>\n</form>\n",
+    "bug_keywords": [
+      "button defaults to submit",
+      "cancel button submits the form",
+      "missing button type"
+    ],
+    "explanation_keywords": [
+      "the browser treats button as submit inside a form",
+      "cancel triggers unintended form submission",
+      "default html behavior causes the bug"
+    ],
+    "fix_keywords": [
+      "type=\"button\"",
+      "type=\"submit\"",
+      "set the cancel button type explicitly"
+    ]
   },
   {
     "task_id": "hard-react-infinite-loop",
     "difficulty": "hard",
     "title": "React layout infinite loop",
-    "code": "import { useState, useLayoutEffect } from 'react';\n\nfunction Element() {\n  const [width, setWidth] = useState(0);\n\n  useLayoutEffect(() => {\n      setWidth(Math.random() * 100);\n  }, [width]);\n\n  return <div style={{width: width}}>Content</div>;\n}\n",
-    "expected_output": {
-      "explanation": "This creates an infinite render loop. The `useLayoutEffect` depends on `width`, and inside it calls `setWidth`. Since `Math.random` produces a new value every time, it will trigger another layout effect infinitely. The dependency array should be empty or conditional logic must be added.",
-      "required_keyword_groups": [
-        ["infinite loop", "render loop", "endless render", "continuous updates"],
-        ["dependency array", "remove width dependency", "empty array", "conditional update"]
-      ],
-      "partial_keywords": ["useLayoutEffect", "react hooks", "state"]
-    }
+    "category": "frontend",
+    "language": "react",
+    "code": "import { useState, useLayoutEffect } from 'react';\n\nfunction Element() {\n  const [width, setWidth] = useState(0);\n\n  useLayoutEffect(() => {\n      setWidth(Math.random() * 100);\n  }, [width]);\n\n  return <div style={{ width: width }}>Content</div>;\n}\n",
+    "reference_explanation": "The layout effect depends on `width` and immediately sets `width` again, so each render triggers another render. Because `Math.random()` changes every time, the loop never stabilizes.",
+    "reference_fix": "import { useState, useLayoutEffect } from 'react';\n\nfunction Element() {\n  const [width, setWidth] = useState(0);\n\n  useLayoutEffect(() => {\n      setWidth(100);\n  }, []);\n\n  return <div style={{ width: width }}>Content</div>;\n}\n",
+    "bug_keywords": [
+      "infinite render loop",
+      "effect updates a dependency it watches",
+      "setWidth inside useLayoutEffect with [width]"
+    ],
+    "explanation_keywords": [
+      "every update triggers the effect again",
+      "Math.random creates a new width each render",
+      "the component never settles"
+    ],
+    "fix_keywords": [
+      "[]",
+      "remove width from the dependency array",
+      "avoid setting width on every render"
+    ]
+  },
+  {
+    "task_id": "hard-go-loop-pointer",
+    "difficulty": "hard",
+    "title": "Go loop variable pointer leak",
+    "category": "correctness",
+    "language": "go",
+    "code": "package main\n\nimport \"fmt\"\n\ntype User struct { Name string }\n\nfunc main() {\n\tusers := []User{{Name: \"Alice\"}, {Name: \"Bob\"}}\n\tvar ptrs []*User\n\n\tfor _, u := range users {\n\t\tptrs = append(ptrs, &u)\n\t}\n\n\tfor _, p := range ptrs {\n\t\tfmt.Println(p.Name)\n\t}\n}\n",
+    "reference_explanation": "The code appends the address of the loop variable `u`, not the address of each slice element. That makes every pointer reference the same memory slot, so the output repeats the last value.",
+    "reference_fix": "package main\n\nimport \"fmt\"\n\ntype User struct { Name string }\n\nfunc main() {\n\tusers := []User{{Name: \"Alice\"}, {Name: \"Bob\"}}\n\tvar ptrs []*User\n\n\tfor i := range users {\n\t\tptrs = append(ptrs, &users[i])\n\t}\n\n\tfor _, p := range ptrs {\n\t\tfmt.Println(p.Name)\n\t}\n}\n",
+    "bug_keywords": [
+      "address of the loop variable",
+      "all pointers refer to the same value",
+      "&u in the range loop"
+    ],
+    "explanation_keywords": [
+      "the loop variable is reused across iterations",
+      "each pointer ends up pointing at the last user",
+      "shared address causes incorrect output"
+    ],
+    "fix_keywords": [
+      "&users[i]",
+      "iterate by index",
+      "take the address of the slice element"
+    ]
   }
 ]

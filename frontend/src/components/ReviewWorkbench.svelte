@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import confetti from "canvas-confetti";
   import hljs from "highlight.js/lib/core";
   import python from "highlight.js/lib/languages/python";
@@ -14,87 +14,335 @@
   hljs.registerLanguage("xml", xml);
   hljs.registerLanguage("go", go);
 
+  const SOLVED_THRESHOLD = 0.85;
+  const phaseOrder = ["identify_bug", "explain_issue", "fix_code"];
+  const phaseLabels = {
+    identify_bug: "Identify Bug",
+    explain_issue: "Explain Impact",
+    fix_code: "Submit Fix",
+  };
+  const phaseDescriptions = {
+    identify_bug: "Call out the main defect, vulnerability, or failure mode.",
+    explain_issue: "Explain why the issue matters in production or security terms.",
+    fix_code: "Provide corrected code that resolves the root cause.",
+  };
+
+  function emptyBreakdown() {
+    return {
+      bug_detected: 0,
+      explanation: 0,
+      fix: 0,
+      structure_bonus: 0,
+      irrelevant_penalty: 0,
+      hallucinated_fix_penalty: 0,
+      total: 0,
+    };
+  }
+
+  function emptyEvaluation() {
+    return {
+      reward: null,
+      done: false,
+      currentStep: null,
+      stepHistory: [],
+      cumulativeBreakdown: emptyBreakdown(),
+      info: null,
+    };
+  }
+
   let tasks = [];
   let currentTaskId = "";
+  let taskMeta = null;
   let observation = null;
+  let environmentState = null;
   let reviewText = "";
+  let fixCode = "";
   let isBooting = true;
   let isLoadingTask = false;
   let isSubmitting = false;
   let isRunningBaseline = false;
   let isGettingOpinion = false;
-  let mode = "review"; // "review" or "fix"
-  let fixCode = "";
+  let mode = "review";
   let statusText = "Ready";
   let secondOpinionText = "";
   let backendLabel = "manual";
   let selectedDifficulty = "all";
-  $: isEvaluating = isSubmitting || isRunningBaseline;
+  let reviewTextareaEl;
+
+  let evaluation = emptyEvaluation();
+  let typedNarration = "";
+  const typingTimers = new Map();
 
   let sessionStats = { totalScore: 0, solvedTasks: new Set(), reviewsGiven: 0 };
-  let gradingBackend = "";
+
+  $: isBusy = isSubmitting || isRunningBaseline || isLoadingTask;
+  $: filteredTasks = selectedDifficulty === "all" ? tasks : tasks.filter((task) => task.difficulty === selectedDifficulty);
+  $: activeTask = tasks.find((task) => task.task_id === currentTaskId) ?? taskMeta;
+  $: highlightedCode = observation ? hljs.highlightAuto(observation.code).value : "";
+  $: currentPhase = observation?.phase ?? "identify_bug";
+  $: expectedActionType = observation?.expected_action_type ?? "review";
+  $: isEpisodeDone = environmentState?.done ?? evaluation.done;
+  $: currentStepNumber = observation ? (isEpisodeDone ? observation.step_index : observation.step_index + 1) : 1;
+  $: cumulativeBreakdown = evaluation.cumulativeBreakdown ?? emptyBreakdown();
+  $: breakdownRows = [
+    { key: "bug_detected", label: "Bug Detection", value: cumulativeBreakdown.bug_detected, max: 0.3 },
+    { key: "explanation", label: "Explanation", value: cumulativeBreakdown.explanation, max: 0.3 },
+    { key: "fix", label: "Fix Correctness", value: cumulativeBreakdown.fix, max: 0.4 },
+  ];
+  $: latestMatched = evaluation.currentStep?.matched_keywords ?? [];
+  $: latestMissing = evaluation.currentStep?.missing_keywords ?? [];
+  $: tone = cumulativeBreakdown.total >= SOLVED_THRESHOLD ? "green" : cumulativeBreakdown.total >= 0.45 ? "yellow" : cumulativeBreakdown.total > 0 ? "red" : "neutral";
+
+  function stopTyping(key) {
+    const job = typingTimers.get(key);
+    if (!job) return;
+    clearTimeout(job.timeoutId);
+    typingTimers.delete(key);
+    job.resolve?.();
+  }
+
+  function stopAllTyping() {
+    for (const key of [...typingTimers.keys()]) {
+      stopTyping(key);
+    }
+  }
+
+  function keepTextareaPinned() {
+    if (!reviewTextareaEl) return;
+    reviewTextareaEl.scrollTop = reviewTextareaEl.scrollHeight;
+  }
+
+  function animateText(key, text, applyValue, speed = 18) {
+    stopTyping(key);
+    applyValue("");
+
+    if (!text) {
+      return Promise.resolve();
+    }
+
+    let index = 0;
+
+    return new Promise((resolve) => {
+      const step = () => {
+        index += 1;
+        applyValue(text.slice(0, index));
+
+        if (index >= text.length) {
+          typingTimers.delete(key);
+          resolve();
+          return;
+        }
+
+        const char = text.charAt(index - 1);
+        const delay = /[.!?]/.test(char) ? speed * 5 : /[,;:]/.test(char) ? speed * 3 : speed;
+        const timeoutId = window.setTimeout(step, delay);
+        typingTimers.set(key, { timeoutId, resolve });
+      };
+
+      step();
+    });
+  }
+
+  function typeNarration(text, speed = 18) {
+    return animateText("narration", text, (value) => {
+      typedNarration = value;
+    }, speed);
+  }
+
+  function streamReviewText(text, speed = 12) {
+    return animateText("review", text, (value) => {
+      reviewText = value;
+      keepTextareaPinned();
+    }, speed);
+  }
+
+  function streamSecondOpinion(text, speed = 16) {
+    return animateText("second-opinion", text, (value) => {
+      secondOpinionText = value;
+    }, speed);
+  }
 
   function saveStats() {
     try {
-      const data = { totalScore: sessionStats.totalScore, solvedTasks: [...sessionStats.solvedTasks], reviewsGiven: sessionStats.reviewsGiven };
-      localStorage.setItem('cr_session', JSON.stringify(data));
-    } catch(e) {}
+      const data = {
+        totalScore: sessionStats.totalScore,
+        solvedTasks: [...sessionStats.solvedTasks],
+        reviewsGiven: sessionStats.reviewsGiven,
+      };
+      localStorage.setItem("cr_session", JSON.stringify(data));
+    } catch (error) {}
   }
 
   function loadStats() {
     try {
-      const raw = localStorage.getItem('cr_session');
+      const raw = localStorage.getItem("cr_session");
       if (raw) {
         const data = JSON.parse(raw);
-        sessionStats = { totalScore: data.totalScore || 0, solvedTasks: new Set(data.solvedTasks || []), reviewsGiven: data.reviewsGiven || 0 };
+        sessionStats = {
+          totalScore: data.totalScore || 0,
+          solvedTasks: new Set(data.solvedTasks || []),
+          reviewsGiven: data.reviewsGiven || 0,
+        };
       }
-    } catch(e) {}
-  }
-
-  $: filteredTasks = selectedDifficulty === "all" ? tasks : tasks.filter(t => t.difficulty === selectedDifficulty);
-
-  let evaluation = {
-    reward: null, done: null,
-    explanation: "Submit a review to see the evaluation.",
-    details: null, state: null, submittedReview: "",
-  };
-
-  let typedExplanation = "";
-  let typingTimeout;
-
-  function typeOut(text, speed = 18) {
-    clearTimeout(typingTimeout);
-    typedExplanation = "";
-    let i = 0;
-    function step() {
-      if (i < text.length) {
-        typedExplanation += text.charAt(i);
-        i++;
-        typingTimeout = setTimeout(step, speed);
-      }
-    }
-    step();
+    } catch (error) {}
   }
 
   function fireConfetti() {
-    confetti({ particleCount: 120, spread: 80, origin: { y: 0.7 }, colors: ['#3b82f6','#22c55e','#a855f7','#fff'], zIndex: 99999 });
-    setTimeout(() => confetti({ particleCount: 60, spread: 100, origin: { y: 0.5, x: 0.3 }, colors: ['#3b82f6','#22c55e'] }), 200);
-    setTimeout(() => confetti({ particleCount: 60, spread: 100, origin: { y: 0.5, x: 0.7 }, colors: ['#a855f7','#fff'] }), 400);
+    confetti({ particleCount: 120, spread: 80, origin: { y: 0.7 }, colors: ["#3b82f6", "#22c55e", "#f59e0b", "#fff"], zIndex: 99999 });
   }
 
   async function fetchJson(url, options = {}) {
-    const r = await fetch(url, { headers: { "Content-Type": "application/json", ...(options.headers ?? {}) }, ...options });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || "Request failed.");
+    const response = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
+      ...options,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Request failed.");
     return data;
   }
 
   function resetEvaluation() {
     backendLabel = "manual";
-    evaluation = { reward: null, done: null, explanation: "", details: null, state: null, submittedReview: "" };
-    typedExplanation = "";
+    evaluation = emptyEvaluation();
     secondOpinionText = "";
-    clearTimeout(typingTimeout);
+    typedNarration = "";
+    stopAllTyping();
+  }
+
+  function syncModeWithObservation() {
+    if (!observation) return;
+    mode = observation.expected_action_type;
+    if (observation.phase === "fix_code" && !fixCode.trim()) {
+      fixCode = observation.code;
+    }
+  }
+
+  function historyPayload() {
+    return evaluation.stepHistory.map((record) => record.action);
+  }
+
+  function formatReward(value) {
+    return value == null ? "—" : Number(value).toFixed(2);
+  }
+
+  function clampPercent(value, max) {
+    if (!max) return "0%";
+    return `${Math.max(0, Math.min(100, (value / max) * 100))}%`;
+  }
+
+  function listOrFallback(values, fallback) {
+    return values && values.length > 0 ? values : [fallback];
+  }
+
+  function summarizeRecord(record) {
+    return `${phaseLabels[record.phase]}: ${record.reward.feedback || record.reward.rationale}`;
+  }
+
+  function summarizeEpisode(stepHistory) {
+    if (!stepHistory.length) {
+      return "Start the workflow by identifying the bug, then explain the impact, then submit a fix.";
+    }
+    return stepHistory.map((record) => summarizeRecord(record)).join("\n\n");
+  }
+
+  function combinedReviewText() {
+    const reviewSteps = evaluation.stepHistory.filter((record) => record.action?.type === "review");
+    if (!reviewSteps.length) {
+      return reviewText.trim();
+    }
+    return reviewSteps
+      .map((record) => `${phaseLabels[record.phase]}: ${record.action.content}`)
+      .join("\n\n");
+  }
+
+  function phaseIndex(phase) {
+    return phaseOrder.indexOf(phase);
+  }
+
+  function isPhaseComplete(phase) {
+    return evaluation.stepHistory.some((record) => record.phase === phase);
+  }
+
+  function isPhaseUnlocked(phase) {
+    if (!observation) return false;
+    if (isEpisodeDone) return true;
+    return phaseIndex(phase) <= phaseIndex(currentPhase) || isPhaseComplete(phase);
+  }
+
+  function handlePhaseClick(phase) {
+    if (!observation) return;
+
+    if (!isPhaseUnlocked(phase)) {
+      statusText = `Finish ${phaseLabels[currentPhase]} first to unlock ${phaseLabels[phase]}.`;
+      return;
+    }
+
+    mode = phase === "fix_code" ? "fix" : "review";
+
+    const existingRecord = evaluation.stepHistory.find((record) => record.phase === phase);
+    if (existingRecord && phase !== currentPhase) {
+      typeNarration(`${phaseLabels[phase]}: ${existingRecord.reward.feedback || existingRecord.reward.rationale}`);
+      statusText = `${phaseLabels[phase]} is already complete. Continue with ${phaseLabels[currentPhase]}.`;
+      return;
+    }
+
+    statusText = `${phaseLabels[phase]} ready`;
+  }
+
+  function registerReward(data) {
+    sessionStats.reviewsGiven += 1;
+    sessionStats.totalScore += data.reward ?? 0;
+
+    const episodeTotal = data.state?.cumulative_reward ?? data.info?.cumulative_breakdown?.total ?? 0;
+    const wasSolved = sessionStats.solvedTasks.has(currentTaskId);
+    if (data.done && episodeTotal >= SOLVED_THRESHOLD) {
+      sessionStats.solvedTasks.add(currentTaskId);
+      if (!wasSolved) {
+        sessionStats = sessionStats;
+        fireConfetti();
+      }
+    }
+    saveStats();
+  }
+
+  function applyResponse(data, { source = "manual" } = {}) {
+    taskMeta = data.task ?? taskMeta;
+    observation = data.observation;
+    environmentState = data.state ?? environmentState;
+    evaluation = {
+      reward: data.reward,
+      done: data.done,
+      currentStep: data.info?.step_evaluation ?? data.info?.score_details ?? null,
+      stepHistory: data.info?.step_history ?? data.state?.history ?? [],
+      cumulativeBreakdown: data.info?.cumulative_breakdown ?? emptyBreakdown(),
+      info: data.info ?? null,
+    };
+
+    backendLabel = data.backend ?? source;
+
+    if (data.submitted_fixed_code) {
+      fixCode = data.submitted_fixed_code;
+    }
+    if (data.done && data.submitted_review) {
+      reviewText = data.submitted_review;
+    }
+
+    syncModeWithObservation();
+
+    const narrative = data.done
+      ? summarizeEpisode(evaluation.stepHistory)
+      : evaluation.currentStep?.feedback || evaluation.currentStep?.rationale || observation?.prompt || "";
+    typeNarration(narrative);
+
+    if (!data.done && observation?.phase === "fix_code" && !fixCode.trim()) {
+      fixCode = observation.code;
+    }
+
+    if (data.done) {
+      statusText = `Episode complete: ${formatReward(data.state?.cumulative_reward)} / 1.00`;
+    } else {
+      statusText = `${phaseLabels[observation.phase]} ready`;
+    }
   }
 
   async function loadTasks() {
@@ -104,149 +352,171 @@
       tasks = data.tasks;
       if (tasks.length > 0) {
         currentTaskId = tasks[0].task_id;
-        await loadTask(currentTaskId, { preserveReview: false });
+        await loadTask(currentTaskId, { preserveInputs: false });
       }
-    } catch (e) { statusText = "Failed to load tasks."; }
-    finally { isBooting = false; }
+    } catch (error) {
+      statusText = "Failed to load tasks.";
+    } finally {
+      isBooting = false;
+    }
   }
 
-  async function loadTask(taskId, { preserveReview = true } = {}) {
+  async function loadTask(taskId, { preserveInputs = true } = {}) {
     if (!taskId) return;
     isLoadingTask = true;
     try {
       const data = await fetchJson(`/api/tasks/${encodeURIComponent(taskId)}`);
-      observation = data.observation;
       currentTaskId = data.observation.task_id;
-      if (!preserveReview) {
+      taskMeta = data.task ?? tasks.find((task) => task.task_id === currentTaskId) ?? null;
+      observation = data.observation;
+      environmentState = data.state;
+      if (!preserveInputs) {
         reviewText = "";
         fixCode = data.observation.code;
       }
       resetEvaluation();
+      syncModeWithObservation();
       statusText = "Ready";
-    } catch (e) { statusText = "Failed to load scenario."; }
-    finally { isLoadingTask = false; }
+    } catch (error) {
+      statusText = "Failed to load scenario.";
+    } finally {
+      isLoadingTask = false;
+    }
   }
 
-  async function submitReview() {
-    if (!currentTaskId || !reviewText.trim()) { statusText = "Write a review first."; return; }
-    isSubmitting = true;
-    statusText = "Evaluating...";
-    try {
-      const data = await fetchJson("/api/review", { method: "POST", body: JSON.stringify({ task_id: currentTaskId, review: reviewText.trim() }) });
-      backendLabel = "manual";
-      gradingBackend = data.info.grading_backend || "keyword";
-      evaluation = { reward: data.reward, done: data.done, explanation: data.info.expected_explanation, details: data.info.score_details, state: data.state, submittedReview: data.submitted_review };
-      sessionStats.reviewsGiven += 1;
-      sessionStats.totalScore += data.reward;
-      if (data.reward === 1) { sessionStats.solvedTasks.add(currentTaskId); sessionStats = sessionStats; fireConfetti(); }
-      saveStats();
-      typeOut(data.info.score_details.rationale || data.info.expected_explanation);
-      statusText = `Scored: ${data.info.score_details.verdict.replaceAll("_"," ")} (${gradingBackend} grading)`;
-    } catch (e) { statusText = "Evaluation failed."; }
-    finally { isSubmitting = false; }
-  }
+  async function submitCurrentAction() {
+    if (!currentTaskId || !observation) return;
+    if (isEpisodeDone) {
+      statusText = "This episode is complete. Load another scenario to continue.";
+      return;
+    }
 
-  async function submitFix() {
-    if (!currentTaskId || !fixCode.trim()) { statusText = "Write some code first."; return; }
+    const content = mode === "review" ? reviewText.trim() : fixCode.trim();
+    if (!content) {
+      statusText = mode === "review" ? "Write a review first." : "Write the fixed code first.";
+      return;
+    }
+
     isSubmitting = true;
-    statusText = "Evaluating Fix...";
+    statusText = `Scoring ${phaseLabels[currentPhase]}...`;
+
     try {
-      const data = await fetchJson("/api/grade-fix", { method: "POST", body: JSON.stringify({ task_id: currentTaskId, fixed_code: fixCode.trim() }) });
-      backendLabel = "manual";
-      gradingBackend = data.info.grading_backend || "ai_fix";
-      evaluation = { reward: data.reward, done: true, explanation: data.info.expected_explanation, details: data.info.score_details, state: null, submittedReview: fixCode };
-      sessionStats.reviewsGiven += 1;
-      sessionStats.totalScore += data.reward;
-      if (data.reward === 1) { sessionStats.solvedTasks.add(currentTaskId); sessionStats = sessionStats; fireConfetti(); }
-      saveStats();
-      typeOut(data.info.score_details.rationale || "Fix Evaluated.");
-      statusText = `Scored: ${data.info.score_details.verdict.replaceAll("_"," ")} (AI grading)`;
-    } catch (e) { statusText = "Evaluation failed."; }
-    finally { isSubmitting = false; }
+      const data = await fetchJson("/api/step", {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: currentTaskId,
+          action: { type: mode, content },
+          history: historyPayload(),
+        }),
+      });
+      registerReward(data);
+      applyResponse(data, { source: "manual" });
+
+      if (mode === "review" && !data.done) {
+        reviewText = "";
+      }
+    } catch (error) {
+      statusText = "Evaluation failed.";
+    } finally {
+      isSubmitting = false;
+    }
   }
 
   async function runBaseline() {
     if (!currentTaskId) return;
     isRunningBaseline = true;
-    statusText = "Running AI reviewer...";
+    resetEvaluation();
+    statusText = "Running AI baseline through all 3 steps...";
+
     try {
-      const data = await fetchJson("/api/baseline-review", { method: "POST", body: JSON.stringify({ task_id: currentTaskId }) });
-      backendLabel = data.backend;
-      gradingBackend = data.info.grading_backend || "keyword";
-      reviewText = data.submitted_review;
-      evaluation = { reward: data.reward, done: data.done, explanation: data.info.expected_explanation, details: data.info.score_details, state: data.state, submittedReview: data.submitted_review };
-      sessionStats.reviewsGiven += 1;
-      sessionStats.totalScore += data.reward;
-      if (data.reward === 1) { sessionStats.solvedTasks.add(currentTaskId); sessionStats = sessionStats; fireConfetti(); }
-      saveStats();
-      typeOut(data.info.score_details.rationale || data.info.expected_explanation);
-      statusText = `AI review: ${data.reward.toFixed(1)} reward (${gradingBackend} grading)`;
-    } catch (e) { statusText = "AI review failed."; }
-    finally { isRunningBaseline = false; }
+      const data = await fetchJson("/api/baseline-review", {
+        method: "POST",
+        body: JSON.stringify({ task_id: currentTaskId }),
+      });
+      if (data.submitted_review) {
+        await streamReviewText(data.submitted_review);
+      }
+      if (data.submitted_fixed_code) {
+        fixCode = data.submitted_fixed_code;
+      }
+      registerReward(data);
+      applyResponse(data, { source: data.backend ?? "baseline" });
+    } catch (error) {
+      statusText = "Baseline run failed.";
+    } finally {
+      isRunningBaseline = false;
+    }
   }
 
   async function getSecondOpinion() {
-    if (!currentTaskId || !evaluation.submittedReview) return;
+    const transcript = combinedReviewText();
+    if (!currentTaskId || !transcript) return;
+
     isGettingOpinion = true;
-    statusText = "Consulting Auditor AI...";
-    secondOpinionText = "Analyzing...";
+    statusText = "Consulting auditor AI...";
+    secondOpinionText = "";
+    stopTyping("second-opinion");
+
     try {
-      const data = await fetchJson("/api/second-opinion", { method: "POST", body: JSON.stringify({ task_id: currentTaskId, review: evaluation.submittedReview }) });
-      secondOpinionText = data.second_opinion;
+      const data = await fetchJson("/api/second-opinion", {
+        method: "POST",
+        body: JSON.stringify({ task_id: currentTaskId, review: transcript }),
+      });
+      await streamSecondOpinion(data.second_opinion);
       statusText = "Second opinion received";
-    } catch (e) { 
+    } catch (error) {
       secondOpinionText = "Failed to get second opinion.";
       statusText = "Auditor error";
+    } finally {
+      isGettingOpinion = false;
     }
-    finally { isGettingOpinion = false; }
   }
 
-  function clearReview() { reviewText = ""; resetEvaluation(); }
-
-  function formatReward(v) { return v == null ? "—" : Number(v).toFixed(1); }
-  function listOrFallback(v, fb) { return v && v.length > 0 ? v : [fb]; }
-
-  $: activeTask = tasks.find(t => t.task_id === currentTaskId) ?? null;
-  $: highlightedCode = observation ? hljs.highlightAuto(observation.code).value : "";
-  $: tone = evaluation.reward === 1 ? "green" : evaluation.reward === 0.5 ? "yellow" : evaluation.reward === 0 ? "red" : "neutral";
+  function clearCurrentInput() {
+    if (mode === "review") {
+      reviewText = "";
+      return;
+    }
+    fixCode = observation?.code ?? "";
+  }
 
   onMount(() => {
     loadStats();
     loadTasks();
   });
+
+  onDestroy(() => {
+    stopAllTyping();
+  });
 </script>
 
-<!-- ===== HEADER ===== -->
 <header class="topbar">
   <div class="topbar-left">
     <div class="logo-mark">CR</div>
     <div class="logo-text">
       <span>Code Review</span>
-      <span class="logo-sub">Workspace</span>
+      <span class="logo-sub">OpenEnv Lab</span>
     </div>
   </div>
   <div class="topbar-center">
-    <div class="stat"><span class="stat-val">{sessionStats.totalScore.toFixed(1)}</span><span class="stat-lbl">Score</span></div>
+    <div class="stat"><span class="stat-val">{sessionStats.totalScore.toFixed(2)}</span><span class="stat-lbl">Score</span></div>
     <div class="stat-divider"></div>
     <div class="stat"><span class="stat-val">{sessionStats.solvedTasks.size}<span class="stat-dim">/{tasks.length}</span></span><span class="stat-lbl">Solved</span></div>
     <div class="stat-divider"></div>
     <div class="stat"><span class="stat-val">{sessionStats.reviewsGiven ? ((sessionStats.solvedTasks.size / sessionStats.reviewsGiven) * 100).toFixed(0) : 0}%</span><span class="stat-lbl">Accuracy</span></div>
   </div>
   <div class="topbar-right">
-    <span class="status-dot" class:active={isSubmitting || isRunningBaseline}></span>
+    <span class="status-dot" class:active={isBusy}></span>
     <span class="status-text">{statusText}</span>
   </div>
 </header>
 
-<!-- ===== MAIN CONTENT ===== -->
 <div class="page-wrapper">
-
-  <!-- SCENARIO SIDEBAR -->
   <aside class="sidebar">
     <div class="sidebar-header">
       <h2 class="section-title">Scenarios</h2>
       <div class="filter-bar">
-        {#each ["all","easy","medium","hard"] as level}
+        {#each ["all", "easy", "medium", "hard"] as level}
           <button class="filter-pill" class:active={selectedDifficulty === level} on:click={() => selectedDifficulty = level}>
             {level === "all" ? "All" : level.charAt(0).toUpperCase() + level.slice(1)}
           </button>
@@ -260,7 +530,7 @@
           class="task-card"
           class:selected={task.task_id === currentTaskId}
           class:solved={sessionStats.solvedTasks.has(task.task_id)}
-          on:click={() => loadTask(task.task_id, { preserveReview: false })}
+          on:click={() => loadTask(task.task_id, { preserveInputs: false })}
           disabled={isLoadingTask}
         >
           <div class="task-row">
@@ -270,16 +540,13 @@
               <span class="solved-check">✓</span>
             {/if}
           </div>
-          <span class="task-meta">{task.difficulty} · {task.task_id}</span>
+          <span class="task-meta">{task.difficulty} · {task.category} · {task.language}</span>
         </button>
       {/each}
     </div>
   </aside>
 
-  <!-- MAIN PANELS -->
   <main class="main-content">
-
-    <!-- CODE OBSERVATION -->
     <section class="panel code-panel">
       <div class="panel-header">
         <div>
@@ -287,105 +554,157 @@
           <h2 class="panel-title">{activeTask?.title ?? "Loading..."}</h2>
         </div>
         {#if observation}
-          <span class="badge {observation.difficulty}">{observation.difficulty}</span>
+          <div class="badge-row">
+            <span class="badge {observation.difficulty}">{observation.difficulty}</span>
+            <span class="badge neutral">{activeTask?.language ?? "code"}</span>
+          </div>
         {/if}
       </div>
+
+      <div class="phase-strip">
+        {#each phaseOrder as phase, index}
+          <button
+            type="button"
+            class="step-pill"
+            class:active={currentPhase === phase && !isEpisodeDone}
+            class:complete={isPhaseComplete(phase)}
+            class:locked={!isPhaseUnlocked(phase)}
+            on:click={() => handlePhaseClick(phase)}
+            title={isPhaseUnlocked(phase) ? phaseLabels[phase] : `Finish ${phaseLabels[currentPhase]} first`}
+          >
+            <span class="step-index">{index + 1}</span>
+            <span>{phaseLabels[phase]}</span>
+          </button>
+        {/each}
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-top">
+          <div class="prompt-phase">{phaseLabels[currentPhase]}</div>
+          <div class="prompt-step">Step {Math.min(currentStepNumber, 3)} / 3</div>
+        </div>
+        <p>{observation?.prompt ?? "Loading prompt..."}</p>
+        <span class="prompt-note">{phaseDescriptions[currentPhase]}</span>
+      </div>
+
       <div class="code-frame">
         <div class="code-toolbar">
           <span class="toolbar-dot red"></span>
           <span class="toolbar-dot yellow"></span>
           <span class="toolbar-dot green"></span>
-          <span class="toolbar-filename">{observation?.task_id ?? "snippet"}.py</span>
+          <span class="toolbar-filename">{observation?.task_id ?? "snippet"}.txt</span>
         </div>
         <pre class="code-block hljs"><code>{@html highlightedCode || " "}</code></pre>
       </div>
     </section>
 
-    <!-- REVIEW + EVALUATION -->
     <div class="two-col">
-
-      <!-- REVIEW INPUT -->
       <section class="panel review-panel">
         <div class="panel-header">
           <div>
             <div class="panel-label">Submission</div>
-            <div class="mode-toggle">
-              <button class="mode-btn" class:selected={mode === 'review'} on:click={() => mode = 'review'}>Write Review</button>
-              <button class="mode-btn" class:selected={mode === 'fix'} on:click={() => mode = 'fix'}>Fix Code</button>
-            </div>
+            <h2 class="panel-title">{phaseLabels[currentPhase]}</h2>
+          </div>
+          <div class="mode-toggle">
+            <button class="mode-btn" class:selected={mode === "review"} on:click={() => mode = "review"}>Review</button>
+            <button class="mode-btn" class:selected={mode === "fix"} on:click={() => mode = "fix"}>Fix</button>
           </div>
         </div>
-        
-        {#if mode === 'review'}
+
+        <div class="submission-note">
+          <div>
+            <strong>Expected action:</strong> {expectedActionType}
+          </div>
+          {#if mode !== expectedActionType}
+            <div class="warning-note">This mode can still be submitted, but the grader may penalize it as off-phase.</div>
+          {/if}
+        </div>
+
+        {#if mode === "review"}
           <textarea
             bind:value={reviewText}
+            bind:this={reviewTextareaEl}
             class="review-textarea"
-            placeholder="Explain the bug, why it matters, and what the fix should be..."
+            placeholder="Write a focused review for the current step..."
             spellcheck="false"
-            rows="8"
+            rows="10"
+            disabled={isEpisodeDone}
           ></textarea>
         {:else}
           <textarea
             bind:value={fixCode}
             class="review-textarea code-font"
-            placeholder="Write the fixed code here..."
+            placeholder="Write the corrected code for this scenario..."
             spellcheck="false"
-            rows="8"
+            rows="10"
+            disabled={isEpisodeDone}
           ></textarea>
         {/if}
 
         <div class="review-actions">
-          {#if mode === 'review'}
-            <button class="btn btn-primary" on:click={submitReview} disabled={isSubmitting}>
-              {isSubmitting ? "Evaluating..." : "Submit Review"}
-            </button>
-            <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
-              {isRunningBaseline ? "Running..." : "Run AI Baseline"}
-            </button>
-          {:else}
-            <button class="btn btn-primary" on:click={submitFix} disabled={isSubmitting}>
-              {isSubmitting ? "Evaluating Fix..." : "Evaluate Fix"}
-            </button>
-          {/if}
-          <button class="btn btn-ghost" on:click={clearReview}>Clear</button>
+          <button class="btn btn-primary" on:click={submitCurrentAction} disabled={isSubmitting || isEpisodeDone}>
+            {isSubmitting ? "Scoring..." : "Submit Step"}
+          </button>
+          <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
+            {isRunningBaseline ? "Running..." : "Run AI Baseline"}
+          </button>
+          <button class="btn btn-ghost" on:click={clearCurrentInput}>Clear</button>
         </div>
       </section>
 
-      <!-- EVALUATION PANEL -->
       <section class="panel eval-panel">
         <div class="panel-header">
           <div>
             <div class="panel-label">Evaluation</div>
-            <h2 class="panel-title">AI Scorecard</h2>
+            <h2 class="panel-title">Transparent Scorecard</h2>
           </div>
         </div>
 
-        {#if isEvaluating}
+        {#if isBooting}
           <div class="processing-state">
             <div class="spinner"></div>
-            <p>Analyzing code with AI...</p>
-            <div class="skeleton-lines">
-               <div class="sk-line"></div>
-               <div class="sk-line w-75"></div>
-               <div class="sk-line w-50"></div>
-            </div>
+            <p>Preparing the environment...</p>
           </div>
         {:else if evaluation.reward !== null}
           <div class="score-display {tone}">
-            <div class="score-number">{formatReward(evaluation.reward)}</div>
-            <div class="score-verdict">{evaluation.details?.verdict?.replaceAll("_"," ") ?? "Evaluated"}</div>
+            <div class="score-number">{formatReward(cumulativeBreakdown.total)}</div>
+            <div class="score-verdict">Episode Total / 1.00</div>
+            <div class="score-subline">Latest step: {formatReward(evaluation.reward)} · {evaluation.currentStep?.verdict?.replaceAll("_", " ") ?? "evaluated"}</div>
           </div>
 
           <div class="eval-section">
-            <div class="eval-label">AI Rationale</div>
-            <p class="typewriter-text">{typedExplanation}</p>
+            <div class="eval-label">Coach Feedback</div>
+            <p class="typewriter-text">{typedNarration}</p>
           </div>
 
           <div class="eval-section">
-            <div class="eval-label">Matched Signals</div>
+            <div class="eval-label">Reward Breakdown</div>
+            <div class="breakdown-list">
+              {#each breakdownRows as row}
+                <div class="breakdown-row">
+                  <div class="breakdown-head">
+                    <span>{row.label}</span>
+                    <strong>{formatReward(row.value)} / {row.max.toFixed(1)}</strong>
+                  </div>
+                  <div class="breakdown-bar">
+                    <div class="breakdown-fill" style={`width: ${clampPercent(row.value, row.max)}`}></div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+
+            <div class="meta-chip-row">
+              <span class="chip chip-green">Structure bonus: {formatReward(cumulativeBreakdown.structure_bonus)}</span>
+              <span class="chip chip-red">Irrelevant penalty: {formatReward(cumulativeBreakdown.irrelevant_penalty)}</span>
+              <span class="chip chip-red">Hallucinated fix penalty: {formatReward(cumulativeBreakdown.hallucinated_fix_penalty)}</span>
+            </div>
+          </div>
+
+          <div class="eval-section">
+            <div class="eval-label">Latest Signals</div>
             <div class="chip-group">
-              {#each listOrFallback(evaluation.details?.matched_keywords, "No matches yet") as kw}
-                <span class="chip chip-green">{kw}</span>
+              {#each listOrFallback(latestMatched, "No strong matches yet") as keyword}
+                <span class="chip chip-green">{keyword}</span>
               {/each}
             </div>
           </div>
@@ -393,42 +712,62 @@
           <div class="eval-section">
             <div class="eval-label">Missing Signals</div>
             <div class="chip-group">
-              {#each listOrFallback(evaluation.details?.missing_keywords, "All matched ✓") as kw}
-                <span class="chip chip-red">{kw}</span>
+              {#each listOrFallback(latestMissing, "Nothing critical missing") as keyword}
+                <span class="chip chip-red">{keyword}</span>
+              {/each}
+            </div>
+          </div>
+
+          <div class="eval-section">
+            <div class="eval-label">Step History</div>
+            <div class="history-list">
+              {#each evaluation.stepHistory as record}
+                <div class="history-card">
+                  <div class="history-top">
+                    <div>
+                      <strong>{phaseLabels[record.phase]}</strong>
+                      <span>{record.action.type}</span>
+                    </div>
+                    <div class="history-score">{formatReward(record.reward.breakdown.total)}</div>
+                  </div>
+                  <p class="history-copy">{record.action.content}</p>
+                  <div class="history-footer">
+                    <span>{record.reward.verdict.replaceAll("_", " ")}</span>
+                    <span>{record.reward.feedback || record.reward.rationale}</span>
+                  </div>
+                </div>
               {/each}
             </div>
           </div>
 
           <div class="eval-meta">
-            <div><span>Reviewer</span><strong>{backendLabel}</strong></div>
-            <div><span>Grading</span><strong class="grading-badge {gradingBackend}">{gradingBackend === 'ai' || gradingBackend === 'ai_fix' ? '🤖 AI' : '⚙ Keyword'}</strong></div>
-            <div><span>Overlap</span><strong>{(evaluation.details?.semantic_overlap ?? 0).toFixed(3)}</strong></div>
+            <div><span>Mode</span><strong>{backendLabel}</strong></div>
+            <div><span>Backend</span><strong>{evaluation.info?.grading_backend ?? "deterministic_v2"}</strong></div>
+            <div><span>Episode</span><strong>{isEpisodeDone ? "Complete" : "In progress"}</strong></div>
           </div>
-          
+
           {#if secondOpinionText}
             <div class="eval-section auditor-panel">
-              <div class="eval-label auditor-label">🕵️ Auditor's Second Opinion</div>
+              <div class="eval-label auditor-label">Auditor Second Opinion</div>
               <p class="auditor-text">{secondOpinionText}</p>
             </div>
-          {:else}
+          {:else if evaluation.stepHistory.length > 0}
             <button class="btn btn-outline auditor-btn" on:click={getSecondOpinion} disabled={isGettingOpinion}>
-               {isGettingOpinion ? "Consulting..." : "Request Second Opinion"}
+              {isGettingOpinion ? "Consulting..." : "Request Second Opinion"}
             </button>
           {/if}
         {:else}
           <div class="empty-eval">
             <div class="empty-icon">⬡</div>
-            <p>Submit a review or run the baseline to see the AI evaluation.</p>
+            <p>Work through the three-step review loop to see detailed rewards, penalties, and history.</p>
           </div>
         {/if}
       </section>
     </div>
-
   </main>
 </div>
 
 <style>
-  /* =================== TOPBAR =================== */
   .topbar {
     position: sticky;
     top: 0;
@@ -454,7 +793,7 @@
     width: 32px;
     height: 32px;
     border-radius: var(--radius-sm);
-    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    background: linear-gradient(135deg, #3b82f6, #f59e0b);
     display: grid;
     place-items: center;
     font-weight: 700;
@@ -540,24 +879,22 @@
     animation: pulse 1.2s ease infinite;
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-
   .status-text {
     font-size: 0.75rem;
     color: var(--text-secondary);
   }
 
-  /* =================== PAGE LAYOUT =================== */
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
   .page-wrapper {
     display: grid;
     grid-template-columns: 300px 1fr;
     min-height: calc(100vh - 56px);
   }
 
-  /* =================== SIDEBAR =================== */
   .sidebar {
     border-right: 1px solid var(--border);
     display: flex;
@@ -601,8 +938,6 @@
     transition: all 0.15s;
   }
 
-  .filter-pill:hover { color: var(--text-primary); }
-
   .filter-pill.active {
     background: var(--text-primary);
     color: var(--bg-root);
@@ -644,8 +979,6 @@
     border-left: 3px solid var(--green);
   }
 
-  .task-card:disabled { opacity: 0.5; cursor: wait; }
-
   .task-row {
     display: flex;
     align-items: center;
@@ -682,34 +1015,28 @@
     padding-left: 16px;
   }
 
-  /* =================== MAIN =================== */
   .main-content {
-    padding: 24px;
+    padding: 20px;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
     overflow-y: auto;
   }
 
-  /* =================== PANELS =================== */
   .panel {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     overflow: hidden;
-    transition: border-color 0.2s;
-  }
-
-  .panel:hover {
-    border-color: var(--border-hover);
   }
 
   .panel-header {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    padding: 20px 24px;
+    padding: 18px 20px;
     border-bottom: 1px solid var(--border);
+    gap: 14px;
   }
 
   .panel-label {
@@ -730,36 +1057,10 @@
     margin: 0;
   }
 
-  .mode-toggle {
+  .badge-row {
     display: flex;
-    background: var(--bg-root);
-    border-radius: var(--radius-sm);
-    padding: 3px;
-    margin-top: 6px;
-    border: 1px solid var(--border);
-    width: fit-content;
-  }
-
-  .mode-btn {
-    background: transparent;
-    border: none;
-    padding: 6px 12px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--text-tertiary);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .mode-btn:hover {
-    color: var(--text-secondary);
-  }
-
-  .mode-btn.selected {
-    background: var(--bg-card-hover);
-    color: var(--text-primary);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    gap: 8px;
+    align-items: center;
   }
 
   .badge {
@@ -774,12 +1075,108 @@
   .badge.easy { color: var(--green); background: var(--green-bg); }
   .badge.medium { color: var(--yellow); background: var(--yellow-bg); }
   .badge.hard { color: var(--red); background: var(--red-bg); }
+  .badge.neutral { color: var(--text-secondary); background: rgba(255,255,255,0.05); }
 
-  /* =================== CODE PANEL =================== */
+  .phase-strip {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding: 14px 20px 0;
+  }
+
+  .step-pill {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, opacity 0.15s;
+  }
+
+  .step-pill:hover:not(.locked) {
+    border-color: var(--border-hover);
+    background: rgba(255,255,255,0.04);
+  }
+
+  .step-pill.active {
+    border-color: rgba(59, 130, 246, 0.45);
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--text-primary);
+  }
+
+  .step-pill.complete {
+    border-color: rgba(34, 197, 94, 0.35);
+    background: rgba(34, 197, 94, 0.08);
+    color: var(--text-primary);
+  }
+
+  .step-pill.locked {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .step-index {
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .prompt-card {
+    margin: 14px 20px 0;
+    padding: 14px 16px;
+    border: 1px solid rgba(59, 130, 246, 0.18);
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(245, 158, 11, 0.06));
+  }
+
+  .prompt-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 10px;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .prompt-phase {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .prompt-step {
+    color: var(--text-secondary);
+  }
+
+  .prompt-card p {
+    margin: 0;
+    color: var(--text-primary);
+    line-height: 1.55;
+  }
+
+  .prompt-note {
+    display: inline-block;
+    margin-top: 10px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+  }
+
   .code-frame {
     background: #0c0c0e;
     border-radius: var(--radius-md);
-    margin: 16px;
+    margin: 14px;
     overflow: hidden;
     border: 1px solid var(--border);
   }
@@ -812,7 +1209,7 @@
 
   .code-block {
     margin: 0;
-    padding: 20px;
+    padding: 18px;
     overflow-x: auto;
     font-family: var(--font-mono);
     font-size: 0.88rem;
@@ -820,33 +1217,74 @@
     background: transparent !important;
   }
 
-  .code-block code {
-    display: block;
-    white-space: pre;
-    word-break: normal;
-    word-wrap: normal;
-  }
-
-  /* =================== TWO COL =================== */
   .two-col {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
+    grid-template-columns: minmax(360px, 0.92fr) minmax(420px, 1.08fr);
+    gap: 16px;
+    align-items: start;
   }
 
-  /* =================== REVIEW PANEL =================== */
+  .review-panel,
+  .eval-panel {
+    min-width: 0;
+  }
+
+  .review-panel {
+    position: sticky;
+    top: 16px;
+  }
+
+  .mode-toggle {
+    display: flex;
+    background: var(--bg-root);
+    border-radius: var(--radius-sm);
+    padding: 3px;
+    border: 1px solid var(--border);
+    width: fit-content;
+  }
+
+  .mode-btn {
+    background: transparent;
+    border: none;
+    padding: 6px 12px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .mode-btn.selected {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+  }
+
+  .submission-note {
+    padding: 12px 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+  }
+
+  .warning-note {
+    color: #fbbf24;
+  }
+
   .review-textarea {
     width: 100%;
     background: var(--bg-input);
     border: none;
-    padding: 20px 24px;
+    padding: 18px 20px;
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 0.88rem;
     line-height: 1.65;
     resize: vertical;
     outline: none;
-    min-height: 160px;
+    min-height: 180px;
     transition: background 0.2s;
   }
 
@@ -854,19 +1292,14 @@
     background: var(--bg-card-hover);
   }
 
-  .review-textarea::placeholder {
-    color: var(--text-tertiary);
-  }
-  
   .review-textarea.code-font {
-    color: #4ade80;
-    font-family: var(--font-mono);
+    color: #86efac;
   }
 
   .review-actions {
     display: flex;
     gap: 8px;
-    padding: 14px 24px;
+    padding: 12px 20px;
     border-top: 1px solid var(--border);
     background: rgba(255,255,255,0.015);
   }
@@ -889,20 +1322,10 @@
     font-weight: 600;
   }
 
-  .btn-primary:hover:not(:disabled) {
-    box-shadow: 0 0 20px rgba(255,255,255,0.15);
-    transform: translateY(-1px);
-  }
-
   .btn-outline {
     background: transparent;
     border-color: var(--border-hover);
     color: var(--text-primary);
-  }
-
-  .btn-outline:hover:not(:disabled) {
-    background: var(--bg-card-hover);
-    border-color: var(--border-focus);
   }
 
   .btn-ghost {
@@ -910,17 +1333,12 @@
     color: var(--text-tertiary);
   }
 
-  .btn-ghost:hover:not(:disabled) {
-    color: var(--text-secondary);
-  }
-
-  /* =================== EVALUATION PANEL =================== */
   .score-display {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 28px 24px 20px;
-    gap: 4px;
+    padding: 22px 20px 16px;
+    gap: 6px;
   }
 
   .score-number {
@@ -947,8 +1365,13 @@
     font-weight: 600;
   }
 
+  .score-subline {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+  }
+
   .eval-section {
-    padding: 16px 24px;
+    padding: 14px 20px;
     border-top: 1px solid var(--border);
   }
 
@@ -958,14 +1381,15 @@
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: var(--text-tertiary);
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
 
   .typewriter-text {
     font-size: 0.88rem;
-    line-height: 1.6;
+    line-height: 1.7;
     color: var(--text-secondary);
     margin: 0;
+    white-space: pre-wrap;
     border-right: 2px solid var(--accent);
     padding-right: 2px;
     animation: blink-caret 0.8s step-end infinite;
@@ -976,15 +1400,53 @@
     50% { border-color: var(--accent); }
   }
 
+  .breakdown-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .breakdown-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .breakdown-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+  }
+
+  .breakdown-bar {
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.06);
+    overflow: hidden;
+  }
+
+  .breakdown-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #3b82f6, #22c55e);
+  }
+
+  .meta-chip-row,
   .chip-group {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
+  }
+
+  .meta-chip-row {
+    margin-top: 14px;
   }
 
   .chip {
     font-size: 0.75rem;
-    padding: 3px 10px;
+    padding: 4px 10px;
     border-radius: 6px;
     font-weight: 500;
   }
@@ -1001,10 +1463,65 @@
     border: 1px solid rgba(239,68,68,0.2);
   }
 
+  .history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .history-card {
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    border-radius: var(--radius-md);
+    padding: 12px;
+  }
+
+  .history-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+
+  .history-top strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+  }
+
+  .history-top span {
+    color: var(--text-tertiary);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .history-score {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+  }
+
+  .history-copy {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  .history-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 10px;
+    font-size: 0.74rem;
+    color: var(--text-tertiary);
+  }
+
   .eval-meta {
     display: flex;
     gap: 20px;
-    padding: 16px 24px;
+    padding: 14px 20px;
     border-top: 1px solid var(--border);
     background: rgba(255,255,255,0.01);
   }
@@ -1028,38 +1545,7 @@
     color: var(--text-secondary);
   }
 
-  .empty-eval {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 48px 24px;
-    color: var(--text-tertiary);
-    text-align: center;
-    gap: 12px;
-  }
-
-  .empty-icon {
-    font-size: 2rem;
-    opacity: 0.3;
-  }
-
-  .empty-eval p {
-    font-size: 0.85rem;
-    max-width: 24ch;
-    margin: 0;
-    line-height: 1.5;
-  }
-
-  .grading-badge {
-    font-size: 0.75rem !important;
-  }
-
-  .grading-badge.ai {
-    color: var(--accent) !important;
-  }
-
-  /* =================== PROCESSING STATE =================== */
+  .empty-eval,
   .processing-state {
     display: flex;
     flex-direction: column;
@@ -1068,6 +1554,12 @@
     padding: 60px 24px;
     gap: 16px;
     color: var(--text-secondary);
+    text-align: center;
+  }
+
+  .empty-icon {
+    font-size: 2rem;
+    opacity: 0.3;
   }
 
   .spinner {
@@ -1083,60 +1575,32 @@
     to { transform: rotate(360deg); }
   }
 
-  .skeleton-lines {
-    width: 60%;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 10px;
-  }
-
-  .sk-line {
-    height: 10px;
-    border-radius: 5px;
-    background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
-    background-size: 200% 100%;
-    animation: loading 1.5s infinite;
-  }
-
-  .sk-line.w-75 { width: 75%; }
-  .sk-line.w-50 { width: 50%; }
-
-  @keyframes loading {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-  }
-
-  /* =================== AUDITOR PANEL =================== */
   .auditor-btn {
-    width: calc(100% - 48px);
-    margin: 16px 24px 24px;
+    width: calc(100% - 40px);
+    margin: 14px 20px 20px;
     border-style: dashed;
   }
 
   .auditor-panel {
-    margin: 0 24px 24px;
+    margin: 0 20px 20px;
     padding: 16px;
     border-radius: var(--radius-md);
-    background: rgba(234, 179, 8, 0.05); /* Yellow-ish tint */
-    border: 1px solid rgba(234, 179, 8, 0.2);
+    background: rgba(245, 158, 11, 0.06);
+    border: 1px solid rgba(245, 158, 11, 0.24);
   }
 
   .auditor-label {
-    color: #fbbf24; /* Amber 400 */
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    color: #fbbf24;
   }
 
   .auditor-text {
     font-size: 0.85rem;
-    line-height: 1.5;
+    line-height: 1.6;
     color: var(--text-secondary);
     margin: 0;
+    white-space: pre-wrap;
   }
 
-  /* =================== RESPONSIVE =================== */
   @media (max-width: 1100px) {
     .page-wrapper {
       grid-template-columns: 1fr;
@@ -1152,6 +1616,30 @@
       grid-template-columns: 1fr;
     }
 
-    .topbar-center { display: none; }
+    .review-panel {
+      position: static;
+    }
+
+    .topbar-center {
+      display: none;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .phase-strip {
+      grid-template-columns: 1fr;
+    }
+
+    .panel-header,
+    .review-actions,
+    .eval-meta,
+    .history-footer {
+      flex-direction: column;
+    }
+
+    .prompt-top,
+    .history-top {
+      flex-direction: column;
+    }
   }
 </style>
