@@ -110,6 +110,7 @@
   $: normalizedCode = normalizeCode(observation?.code ?? "");
   $: codeFilename = buildCodeFilename(observation?.task_id, activeTask?.language);
   $: codeLines = buildCodeLines(normalizedCode, codeLanguage);
+  $: codeLineCount = codeLines.length;
   $: currentPhase = observation?.phase ?? "identify_bug";
   $: expectedActionType = observation?.expected_action_type ?? "review";
   $: isEpisodeDone = environmentState?.done ?? evaluation.done;
@@ -794,10 +795,16 @@
 
       <div class="code-frame">
         <div class="code-toolbar">
-          <span class="toolbar-dot red"></span>
-          <span class="toolbar-dot yellow"></span>
-          <span class="toolbar-dot green"></span>
-          <span class="toolbar-filename">{codeFilename}</span>
+          <div class="code-toolbar-left">
+            <span class="toolbar-dot red"></span>
+            <span class="toolbar-dot yellow"></span>
+            <span class="toolbar-dot green"></span>
+            <span class="toolbar-filename">{codeFilename}</span>
+          </div>
+          <div class="code-toolbar-meta">
+            <span class="code-meta-pill">{activeTask?.language ?? "code"}</span>
+            <span class="code-meta-pill">{codeLineCount} {codeLineCount === 1 ? "line" : "lines"}</span>
+          </div>
         </div>
         <div class="code-block" role="region" aria-label="Code under review">
           <div class="code-lines">
@@ -1487,10 +1494,28 @@
   .code-toolbar {
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: space-between;
+    gap: 16px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
     background: rgba(255,255,255,0.02);
+  }
+
+  .code-toolbar-left,
+  .code-toolbar-meta {
+    display: flex;
+    align-items: center;
+  }
+
+  .code-toolbar-left {
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .code-toolbar-meta {
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .toolbar-dot {
@@ -1508,10 +1533,26 @@
     font-size: 0.78rem;
     color: var(--text-tertiary);
     font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .code-meta-pill {
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.03);
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
   .code-block {
     overflow: auto;
+    min-height: 148px;
     max-height: min(48vh, 420px);
     background:
       linear-gradient(180deg, rgba(59, 130, 246, 0.04), transparent 18%),
@@ -1519,17 +1560,19 @@
   }
 
   .code-lines {
-    min-width: max-content;
-    padding: 16px 0;
+    min-width: 100%;
+    width: max-content;
+    padding: 14px 0;
     font-family: var(--font-mono);
     font-size: 0.88rem;
-    line-height: 1.65;
+    line-height: 1.7;
   }
 
   .code-line {
     display: grid;
     grid-template-columns: 52px minmax(0, 1fr);
     align-items: start;
+    min-height: 28px;
   }
 
   .code-line:hover {
@@ -1542,11 +1585,15 @@
     text-align: right;
     user-select: none;
     border-right: 1px solid rgba(255,255,255,0.05);
+    background: rgba(12, 12, 14, 0.92);
+    position: sticky;
+    left: 0;
+    z-index: 1;
   }
 
   .code-line-content {
     display: block;
-    padding: 0 20px;
+    padding: 0 20px 0 16px;
     color: var(--text-primary);
     white-space: pre;
   }
@@ -2129,6 +2176,15 @@
     .prompt-top,
     .history-top {
       flex-direction: column;
+    }
+
+    .code-toolbar {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .code-toolbar-meta {
+      justify-content: flex-start;
     }
   }
 </style>
