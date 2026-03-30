@@ -15,7 +15,7 @@
   hljs.registerLanguage("go", go);
 
   const SOLVED_THRESHOLD = 0.85;
-  const TASK_SNAPSHOT_STORAGE_KEY = "cr_task_snapshots_v1";
+  const TASK_SESSION_STORAGE_KEY = "cr_task_sessions_v1";
   const phaseOrder = ["identify_bug", "explain_issue", "fix_code"];
   const phaseLabels = {
     identify_bug: "Identify Bug",
@@ -26,30 +26,6 @@
     identify_bug: "Call out the main defect, vulnerability, or failure mode.",
     explain_issue: "Explain why the issue matters in production or security terms.",
     fix_code: "Provide corrected code that resolves the root cause.",
-  };
-  const evalTabs = [
-    { key: "overview", label: "Overview" },
-    { key: "signals", label: "Signals" },
-    { key: "history", label: "History" },
-    { key: "opinion", label: "Second Opinion" },
-  ];
-  const highlightLanguageMap = {
-    python: "python",
-    sql: "sql",
-    javascript: "javascript",
-    react: "javascript",
-    html: "xml",
-    xml: "xml",
-    go: "go",
-  };
-  const fileExtensionMap = {
-    python: "py",
-    sql: "sql",
-    javascript: "js",
-    react: "jsx",
-    html: "html",
-    xml: "xml",
-    go: "go",
   };
 
   function emptyBreakdown() {
@@ -92,10 +68,22 @@
   let secondOpinionText = "";
   let backendLabel = "manual";
   let selectedDifficulty = "all";
-  let activeEvalTab = "overview";
-  let savedTaskSnapshots = {};
-  let restoredFromSnapshot = false;
   let reviewTextareaEl;
+  let taskSessions = {};
+  let taskStatusById = {};
+  let evaluationPanelEl;
+  let celebrationState = {
+    active: false,
+    source: "manual",
+    emoji: "",
+    title: "",
+    detail: "",
+    score: "0.00",
+    run: 0,
+  };
+  let celebrationTimerId = 0;
+  let emojiShower = [];
+  let emojiShowerTimerId = 0;
 
   let evaluation = emptyEvaluation();
   let typedNarration = "";
@@ -106,11 +94,7 @@
   $: isBusy = isSubmitting || isRunningBaseline || isLoadingTask;
   $: filteredTasks = selectedDifficulty === "all" ? tasks : tasks.filter((task) => task.difficulty === selectedDifficulty);
   $: activeTask = tasks.find((task) => task.task_id === currentTaskId) ?? taskMeta;
-  $: codeLanguage = highlightLanguageMap[activeTask?.language] ?? null;
-  $: normalizedCode = normalizeCode(observation?.code ?? "");
-  $: codeFilename = buildCodeFilename(observation?.task_id, activeTask?.language);
-  $: codeLines = buildCodeLines(normalizedCode, codeLanguage);
-  $: codeLineCount = codeLines.length;
+  $: highlightedCode = observation ? hljs.highlightAuto(observation.code).value : "";
   $: currentPhase = observation?.phase ?? "identify_bug";
   $: expectedActionType = observation?.expected_action_type ?? "review";
   $: isEpisodeDone = environmentState?.done ?? evaluation.done;
@@ -125,6 +109,41 @@
   $: latestMissing = evaluation.currentStep?.missing_keywords ?? [];
   $: tone = cumulativeBreakdown.total >= SOLVED_THRESHOLD ? "green" : cumulativeBreakdown.total >= 0.45 ? "yellow" : cumulativeBreakdown.total > 0 ? "red" : "neutral";
   $: isResultsMode = isEpisodeDone && evaluation.stepHistory.length > 0;
+  $: matchedEpisodeSignals = uniqueEpisodeSignals(evaluation.stepHistory, "matched_keywords");
+  $: missingEpisodeSignals = uniqueEpisodeSignals(evaluation.stepHistory, "missing_keywords");
+  $: bestStepRecord = evaluation.stepHistory.reduce((best, record) => {
+    if (!best) return record;
+    return record.reward.breakdown.total > best.reward.breakdown.total ? record : best;
+  }, null);
+  $: taskStatusById = tasks.reduce((statuses, task) => {
+    const snapshot = task.task_id === currentTaskId && observation
+      ? {
+        observation,
+        environmentState,
+        evaluation,
+      }
+      : taskSessions[task.task_id] ?? null;
+
+    const stepHistory = snapshot?.evaluation?.stepHistory ?? [];
+    if (!stepHistory.length) {
+      statuses[task.task_id] = null;
+      return statuses;
+    }
+
+    const completed = snapshot?.evaluation?.done ?? snapshot?.environmentState?.done ?? false;
+    statuses[task.task_id] = completed
+      ? {
+        tone: "completed",
+        badge: "Completed",
+        detail: `Score ${formatReward(taskScore(snapshot))}`,
+      }
+      : {
+        tone: "submitted",
+        badge: "Submitted",
+        detail: `Step ${Math.min(stepHistory.length, phaseOrder.length)}/${phaseOrder.length} saved`,
+      };
+    return statuses;
+  }, {});
 
   function stopTyping(key) {
     const job = typingTimers.get(key);
@@ -143,6 +162,16 @@
   function keepTextareaPinned() {
     if (!reviewTextareaEl) return;
     reviewTextareaEl.scrollTop = reviewTextareaEl.scrollHeight;
+  }
+
+  function uniqueEpisodeSignals(stepHistory, field) {
+    const seen = new Set();
+    for (const record of stepHistory ?? []) {
+      for (const keyword of record?.reward?.[field] ?? []) {
+        seen.add(keyword);
+      }
+    }
+    return [...seen];
   }
 
   function animateText(key, text, applyValue, speed = 18) {
@@ -220,98 +249,110 @@
     } catch (error) {}
   }
 
-  function loadTaskSnapshots() {
+  function loadTaskSessions() {
     try {
-      const raw = localStorage.getItem(TASK_SNAPSHOT_STORAGE_KEY);
-      savedTaskSnapshots = raw ? JSON.parse(raw) : {};
+      const raw = localStorage.getItem(TASK_SESSION_STORAGE_KEY);
+      taskSessions = raw ? JSON.parse(raw) : {};
     } catch (error) {
-      savedTaskSnapshots = {};
+      taskSessions = {};
     }
   }
 
-  function saveTaskSnapshots() {
+  function saveTaskSessions() {
     try {
-      localStorage.setItem(TASK_SNAPSHOT_STORAGE_KEY, JSON.stringify(savedTaskSnapshots));
+      localStorage.setItem(TASK_SESSION_STORAGE_KEY, JSON.stringify(taskSessions));
     } catch (error) {}
-  }
-
-  function snapshotScore(snapshot) {
-    return snapshot?.evaluation?.cumulativeBreakdown?.total ?? snapshot?.environmentState?.cumulative_reward ?? 0;
-  }
-
-  function snapshotStepLabel(snapshot) {
-    if (!snapshot) return "";
-    if (snapshot.completed) {
-      return `Completed · ${formatReward(snapshotScore(snapshot))}`;
-    }
-
-    const nextStep = Math.min((snapshot.environmentState?.step_count ?? 0) + 1, 3);
-    return `Resume at step ${nextStep}/3`;
-  }
-
-  function persistCurrentTaskSnapshot() {
-    if (!currentTaskId || !observation || evaluation.stepHistory.length === 0) {
-      return;
-    }
-
-    savedTaskSnapshots = {
-      ...savedTaskSnapshots,
-      [currentTaskId]: {
-        taskMeta,
-        observation,
-        environmentState,
-        reviewText,
-        fixCode,
-        mode,
-        secondOpinionText,
-        backendLabel,
-        evaluation,
-        typedNarration,
-        completed: isEpisodeDone,
-        savedAt: Date.now(),
-      },
-    };
-    saveTaskSnapshots();
-  }
-
-  function restoreTaskSnapshot(taskId) {
-    const snapshot = savedTaskSnapshots[taskId];
-    if (!snapshot) {
-      return false;
-    }
-
-    currentTaskId = taskId;
-    taskMeta = snapshot.taskMeta ?? tasks.find((task) => task.task_id === taskId) ?? null;
-    observation = snapshot.observation ?? null;
-    environmentState = snapshot.environmentState ?? null;
-    reviewText = snapshot.reviewText ?? "";
-    fixCode = snapshot.fixCode ?? "";
-    mode = snapshot.mode ?? "review";
-    secondOpinionText = snapshot.secondOpinionText ?? "";
-    backendLabel = snapshot.backendLabel ?? "manual";
-    evaluation = snapshot.evaluation ?? emptyEvaluation();
-    typedNarration = snapshot.typedNarration ?? summarizeEpisode(snapshot.evaluation?.stepHistory ?? []);
-    activeEvalTab = snapshot.completed ? "overview" : activeEvalTab;
-    restoredFromSnapshot = true;
-    statusText = snapshot.completed
-      ? "Restored completed episode."
-      : `Restored saved progress for ${taskMeta?.title ?? taskId}.`;
-    return true;
-  }
-
-  function clearTaskSnapshot(taskId = currentTaskId) {
-    if (!taskId || !savedTaskSnapshots[taskId]) {
-      return;
-    }
-
-    const nextSnapshots = { ...savedTaskSnapshots };
-    delete nextSnapshots[taskId];
-    savedTaskSnapshots = nextSnapshots;
-    saveTaskSnapshots();
   }
 
   function fireConfetti() {
     confetti({ particleCount: 120, spread: 80, origin: { y: 0.7 }, colors: ["#3b82f6", "#22c55e", "#f59e0b", "#fff"], zIndex: 99999 });
+  }
+
+  function scrollScorecardIntoView() {
+    if (typeof window === "undefined" || !evaluationPanelEl) return;
+    window.requestAnimationFrame(() => {
+      evaluationPanelEl?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function clearCelebrationTimer() {
+    if (!celebrationTimerId || typeof window === "undefined") return;
+    window.clearTimeout(celebrationTimerId);
+    celebrationTimerId = 0;
+  }
+
+  function clearEmojiShowerTimer() {
+    if (!emojiShowerTimerId || typeof window === "undefined") return;
+    window.clearTimeout(emojiShowerTimerId);
+    emojiShowerTimerId = 0;
+  }
+
+  function celebrationCopy(source) {
+    return source === "baseline"
+      ? {
+        emoji: "🤖",
+        title: "Baseline completed!",
+        detail: "AI walkthrough finished all three steps and staged the scorecard.",
+      }
+      : {
+        emoji: "🎉",
+        title: "Yes, completed!",
+        detail: "Submission accepted, scored, and ready for the scorecard spotlight.",
+      };
+  }
+
+  function emojiPoolFor(source) {
+    return source === "baseline"
+      ? ["🤖", "✨", "🎉", "✅", "🚀", "🏆"]
+      : ["🎉", "✅", "✨", "🥳", "🏆", "🚀"];
+  }
+
+  function buildEmojiShower(source) {
+    const pool = emojiPoolFor(source);
+    return Array.from({ length: 26 }, (_, index) => ({
+      id: `${Date.now()}-${index}`,
+      emoji: pool[Math.floor(Math.random() * pool.length)],
+      left: 4 + Math.random() * 92,
+      top: Math.round(Math.random() * 24),
+      drift: Math.round((Math.random() - 0.5) * 220),
+      rotation: Math.round((Math.random() - 0.5) * 260),
+      delay: Math.round(Math.random() * 240),
+      duration: 1800 + Math.round(Math.random() * 1200),
+      size: 22 + Math.round(Math.random() * 18),
+    }));
+  }
+
+  function launchEmojiShower(source) {
+    if (typeof window === "undefined") return;
+    clearEmojiShowerTimer();
+    emojiShower = buildEmojiShower(source);
+    emojiShowerTimerId = window.setTimeout(() => {
+      emojiShower = [];
+      emojiShowerTimerId = 0;
+    }, 3200);
+  }
+
+  function launchCompletionCelebration(source, totalScore) {
+    if (typeof window === "undefined") return;
+
+    clearCelebrationTimer();
+    const copy = celebrationCopy(source);
+    celebrationState = {
+      active: true,
+      source,
+      emoji: copy.emoji,
+      title: copy.title,
+      detail: copy.detail,
+      score: formatReward(totalScore),
+      run: Date.now(),
+    };
+
+    launchEmojiShower(source);
+    scrollScorecardIntoView();
+    celebrationTimerId = window.setTimeout(() => {
+      celebrationState = { ...celebrationState, active: false };
+      celebrationTimerId = 0;
+    }, 3400);
   }
 
   async function fetchJson(url, options = {}) {
@@ -329,9 +370,91 @@
     evaluation = emptyEvaluation();
     secondOpinionText = "";
     typedNarration = "";
-    activeEvalTab = "overview";
-    restoredFromSnapshot = false;
     stopAllTyping();
+  }
+
+  function normalizeEvaluation(value) {
+    return {
+      reward: value?.reward ?? null,
+      done: value?.done ?? false,
+      currentStep: value?.currentStep ?? null,
+      stepHistory: Array.isArray(value?.stepHistory) ? value.stepHistory : [],
+      cumulativeBreakdown: value?.cumulativeBreakdown ?? emptyBreakdown(),
+      info: value?.info ?? null,
+    };
+  }
+
+  function currentNarration(nextEvaluation = evaluation, nextObservation = observation) {
+    if (nextEvaluation?.done) {
+      return summarizeEpisode(nextEvaluation.stepHistory ?? []);
+    }
+
+    return nextEvaluation?.currentStep?.feedback || nextEvaluation?.currentStep?.rationale || nextObservation?.prompt || "";
+  }
+
+  function taskScore(snapshot) {
+    return snapshot?.evaluation?.cumulativeBreakdown?.total ?? snapshot?.environmentState?.cumulative_reward ?? 0;
+  }
+
+  function persistCurrentTaskSession() {
+    if (!currentTaskId || !observation) return;
+
+    taskSessions = {
+      ...taskSessions,
+      [currentTaskId]: {
+        taskMeta,
+        observation,
+        environmentState,
+        reviewText,
+        fixCode,
+        mode,
+        secondOpinionText,
+        backendLabel,
+        evaluation: normalizeEvaluation(evaluation),
+        savedAt: Date.now(),
+      },
+    };
+    saveTaskSessions();
+  }
+
+  function clearTaskSession(taskId = currentTaskId) {
+    if (!taskId || !taskSessions[taskId]) return;
+
+    const nextSessions = { ...taskSessions };
+    delete nextSessions[taskId];
+    taskSessions = nextSessions;
+    saveTaskSessions();
+  }
+
+  function restoreTaskSession(taskId) {
+    const snapshot = taskSessions[taskId];
+    if (!snapshot?.observation) {
+      return false;
+    }
+
+    stopAllTyping();
+    currentTaskId = taskId;
+    taskMeta = snapshot.taskMeta ?? tasks.find((task) => task.task_id === taskId) ?? null;
+    observation = snapshot.observation;
+    environmentState = snapshot.environmentState ?? null;
+    reviewText = snapshot.reviewText ?? "";
+    fixCode = snapshot.fixCode ?? snapshot.observation.code ?? "";
+    mode = snapshot.mode ?? snapshot.observation.expected_action_type ?? "review";
+    secondOpinionText = snapshot.secondOpinionText ?? "";
+    backendLabel = snapshot.backendLabel ?? "manual";
+    evaluation = normalizeEvaluation(snapshot.evaluation);
+    typedNarration = currentNarration(evaluation, observation);
+
+    if (observation?.phase === "fix_code" && !fixCode.trim()) {
+      fixCode = observation.code;
+    }
+
+    statusText = evaluation.stepHistory.length > 0
+      ? evaluation.done
+        ? "Restored completed episode."
+        : `Restored progress for ${taskMeta?.title ?? taskId}.`
+      : "Ready";
+    return true;
   }
 
   function syncModeWithObservation() {
@@ -370,6 +493,22 @@
     return stepHistory.map((record) => summarizeRecord(record)).join("\n\n");
   }
 
+  function historyPreview(record, limit = 160) {
+    const text = record?.action?.content?.trim() ?? "";
+    if (text.length <= limit) {
+      return text;
+    }
+    return `${text.slice(0, limit).trim()}...`;
+  }
+
+  function historyFeedbackPreview(record, limit = 120) {
+    const feedback = (record?.reward?.feedback || record?.reward?.rationale || "").trim();
+    if (feedback.length <= limit) {
+      return feedback;
+    }
+    return `${feedback.slice(0, limit).trim()}...`;
+  }
+
   function combinedReviewText() {
     const reviewSteps = evaluation.stepHistory.filter((record) => record.action?.type === "review");
     if (!reviewSteps.length) {
@@ -378,60 +517,6 @@
     return reviewSteps
       .map((record) => `${phaseLabels[record.phase]}: ${record.action.content}`)
       .join("\n\n");
-  }
-
-  function escapeHtml(value) {
-    return value
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
-  }
-
-  function normalizeCode(code) {
-    return String(code ?? "").replace(/\r\n/g, "\n").replace(/\t/g, "  ").trimEnd();
-  }
-
-  function highlightLine(line, language) {
-    const content = line.length > 0 ? line : " ";
-
-    try {
-      if (language) {
-        return hljs.highlight(content, { language, ignoreIllegals: true }).value;
-      }
-      return hljs.highlightAuto(content).value;
-    } catch (error) {
-      return escapeHtml(content);
-    }
-  }
-
-  function buildCodeLines(code, language) {
-    const lines = (code || "").split("\n");
-    const safeLines = lines.length > 0 ? lines : [""];
-    return safeLines.map((line, index) => ({
-      number: index + 1,
-      html: highlightLine(line, language),
-    }));
-  }
-
-  function buildCodeFilename(taskId, language) {
-    const extension = fileExtensionMap[language] ?? "txt";
-    return `${taskId ?? "snippet"}.${extension}`;
-  }
-
-  function historyPreview(record) {
-    const text = record.action.content.trim();
-    if (text.length <= 180) {
-      return text;
-    }
-    return `${text.slice(0, 180).trim()}...`;
-  }
-
-  function historyFeedbackPreview(record) {
-    const feedback = (record.reward.feedback || record.reward.rationale || "").trim();
-    if (feedback.length <= 140) {
-      return feedback;
-    }
-    return `${feedback.slice(0, 140).trim()}...`;
   }
 
   function phaseIndex(phase) {
@@ -488,17 +573,16 @@
     taskMeta = data.task ?? taskMeta;
     observation = data.observation;
     environmentState = data.state ?? environmentState;
-    evaluation = {
+    evaluation = normalizeEvaluation({
       reward: data.reward,
       done: data.done,
       currentStep: data.info?.step_evaluation ?? data.info?.score_details ?? null,
       stepHistory: data.info?.step_history ?? data.state?.history ?? [],
       cumulativeBreakdown: data.info?.cumulative_breakdown ?? emptyBreakdown(),
       info: data.info ?? null,
-    };
+    });
 
     backendLabel = data.backend ?? source;
-    restoredFromSnapshot = false;
 
     if (data.submitted_fixed_code) {
       fixCode = data.submitted_fixed_code;
@@ -509,9 +593,7 @@
 
     syncModeWithObservation();
 
-    const narrative = data.done
-      ? summarizeEpisode(evaluation.stepHistory)
-      : evaluation.currentStep?.feedback || evaluation.currentStep?.rationale || observation?.prompt || "";
+    const narrative = currentNarration(evaluation, observation);
     typeNarration(narrative);
 
     if (!data.done && observation?.phase === "fix_code" && !fixCode.trim()) {
@@ -519,13 +601,13 @@
     }
 
     if (data.done) {
-      activeEvalTab = "overview";
       statusText = `Episode complete: ${formatReward(data.state?.cumulative_reward)} / 1.00`;
+      launchCompletionCelebration(source, data.state?.cumulative_reward ?? data.info?.cumulative_breakdown?.total ?? 0);
     } else {
       statusText = `${phaseLabels[observation.phase]} ready`;
     }
 
-    persistCurrentTaskSnapshot();
+    persistCurrentTaskSession();
   }
 
   async function loadTasks() {
@@ -544,15 +626,22 @@
     }
   }
 
-  async function loadTask(taskId, { preserveInputs = true, restoreSaved = true } = {}) {
+  async function loadTask(taskId, { preserveInputs = true, forceReset = false } = {}) {
     if (!taskId) return;
-
-    if (restoreSaved && restoreTaskSnapshot(taskId)) {
-      return;
-    }
-
     isLoadingTask = true;
     try {
+      if (!forceReset && currentTaskId && currentTaskId !== taskId) {
+        persistCurrentTaskSession();
+      }
+
+      if (!forceReset && restoreTaskSession(taskId)) {
+        return;
+      }
+
+      if (forceReset) {
+        clearTaskSession(taskId);
+      }
+
       const data = await fetchJson(`/api/tasks/${encodeURIComponent(taskId)}`);
       currentTaskId = data.observation.task_id;
       taskMeta = data.task ?? tasks.find((task) => task.task_id === currentTaskId) ?? null;
@@ -565,6 +654,7 @@
       resetEvaluation();
       syncModeWithObservation();
       statusText = "Ready";
+      persistCurrentTaskSession();
     } catch (error) {
       statusText = "Failed to load scenario.";
     } finally {
@@ -572,11 +662,10 @@
     }
   }
 
-  async function retryTask(taskId = currentTaskId) {
-    if (!taskId) return;
-    clearTaskSnapshot(taskId);
-    await loadTask(taskId, { preserveInputs: false, restoreSaved: false });
-    statusText = "Started a fresh run for this task.";
+  async function restartCurrentTask() {
+    if (!currentTaskId) return;
+    statusText = "Restarting scenario...";
+    await loadTask(currentTaskId, { preserveInputs: false, forceReset: true });
   }
 
   async function submitCurrentAction() {
@@ -658,9 +747,8 @@
         body: JSON.stringify({ task_id: currentTaskId, review: transcript }),
       });
       await streamSecondOpinion(data.second_opinion);
-      activeEvalTab = "opinion";
       statusText = "Second opinion received";
-      persistCurrentTaskSnapshot();
+      persistCurrentTaskSession();
     } catch (error) {
       secondOpinionText = "Failed to get second opinion.";
       statusText = "Auditor error";
@@ -672,18 +760,22 @@
   function clearCurrentInput() {
     if (mode === "review") {
       reviewText = "";
+      persistCurrentTaskSession();
       return;
     }
     fixCode = observation?.code ?? "";
+    persistCurrentTaskSession();
   }
 
   onMount(() => {
     loadStats();
-    loadTaskSnapshots();
+    loadTaskSessions();
     loadTasks();
   });
 
   onDestroy(() => {
+    clearCelebrationTimer();
+    clearEmojiShowerTimer();
     stopAllTyping();
   });
 </script>
@@ -709,6 +801,36 @@
   </div>
 </header>
 
+{#if celebrationState.active}
+  {#key celebrationState.run}
+    <div class="completion-banner {celebrationState.source}" aria-live="polite">
+      <div class="completion-icon" aria-hidden="true">{celebrationState.emoji}</div>
+      <div class="completion-copy">
+        <span class="completion-kicker">{celebrationState.source === "baseline" ? "Baseline Run" : "Submission Complete"}</span>
+        <strong>{celebrationState.title}</strong>
+        <span class="completion-detail">{celebrationState.detail}</span>
+      </div>
+      <div class="completion-score">
+        <span>Score</span>
+        <strong>{celebrationState.score}</strong>
+      </div>
+    </div>
+  {/key}
+{/if}
+
+{#if emojiShower.length > 0}
+  <div class="emoji-shower" aria-hidden="true">
+    {#each emojiShower as particle (particle.id)}
+      <span
+        class="emoji-particle"
+        style={`left:${particle.left}%; top:${particle.top}px; font-size:${particle.size}px; --emoji-drift:${particle.drift}px; --emoji-rotate:${particle.rotation}deg; animation-delay:${particle.delay}ms; animation-duration:${particle.duration}ms;`}
+      >
+        {particle.emoji}
+      </span>
+    {/each}
+  </div>
+{/if}
+
 <div class="page-wrapper">
   <aside class="sidebar">
     <div class="sidebar-header">
@@ -724,10 +846,12 @@
 
     <div class="task-list">
       {#each filteredTasks as task}
+        {@const sidebarStatus = taskStatusById[task.task_id]}
         <button
           class="task-card"
           class:selected={task.task_id === currentTaskId}
           class:solved={sessionStats.solvedTasks.has(task.task_id)}
+          class:has-progress={sidebarStatus}
           on:click={() => loadTask(task.task_id, { preserveInputs: false })}
           disabled={isLoadingTask}
         >
@@ -739,12 +863,10 @@
             {/if}
           </div>
           <span class="task-meta">{task.difficulty} · {task.category} · {task.language}</span>
-          {#if savedTaskSnapshots[task.task_id]}
-            <div class="task-saved-row">
-              <span class="task-saved-badge" class:completed={savedTaskSnapshots[task.task_id].completed}>
-                {savedTaskSnapshots[task.task_id].completed ? "Completed" : "Saved"}
-              </span>
-              <span class="task-saved-copy">{snapshotStepLabel(savedTaskSnapshots[task.task_id])}</span>
+          {#if sidebarStatus}
+            <div class="task-status-row">
+              <span class="task-status-badge {sidebarStatus.tone}">{sidebarStatus.badge}</span>
+              <span class="task-status-copy">{sidebarStatus.detail}</span>
             </div>
           {/if}
         </button>
@@ -795,27 +917,12 @@
 
       <div class="code-frame">
         <div class="code-toolbar">
-          <div class="code-toolbar-left">
-            <span class="toolbar-dot red"></span>
-            <span class="toolbar-dot yellow"></span>
-            <span class="toolbar-dot green"></span>
-            <span class="toolbar-filename">{codeFilename}</span>
-          </div>
-          <div class="code-toolbar-meta">
-            <span class="code-meta-pill">{activeTask?.language ?? "code"}</span>
-            <span class="code-meta-pill">{codeLineCount} {codeLineCount === 1 ? "line" : "lines"}</span>
-          </div>
+          <span class="toolbar-dot red"></span>
+          <span class="toolbar-dot yellow"></span>
+          <span class="toolbar-dot green"></span>
+          <span class="toolbar-filename">{observation?.task_id ?? "snippet"}.txt</span>
         </div>
-        <div class="code-block" role="region" aria-label="Code under review">
-          <div class="code-lines">
-            {#each codeLines as line (line.number)}
-              <div class="code-line">
-                <span class="code-line-number">{line.number}</span>
-                <span class="code-line-content hljs">{@html line.html}</span>
-              </div>
-            {/each}
-          </div>
-        </div>
+        <pre class="code-block hljs"><code>{@html highlightedCode || " "}</code></pre>
       </div>
     </section>
 
@@ -824,7 +931,7 @@
         <div class="panel-header">
           <div>
             <div class="panel-label">Submission</div>
-            <h2 class="panel-title">{isResultsMode ? "Episode Submission" : phaseLabels[currentPhase]}</h2>
+            <h2 class="panel-title">{isResultsMode ? "Episode Summary" : phaseLabels[currentPhase]}</h2>
           </div>
           {#if !isResultsMode}
             <div class="mode-toggle">
@@ -835,32 +942,80 @@
         </div>
 
         {#if isResultsMode}
-          <div class="submission-summary">
-            <div class="summary-chip-row">
-              <span class="chip chip-green">Episode total: {formatReward(cumulativeBreakdown.total)}</span>
-              <span class="chip chip-neutral">Backend: {backendLabel}</span>
-              <span class="chip chip-neutral">Steps: {evaluation.stepHistory.length}/3</span>
-              <span class="chip chip-neutral">{restoredFromSnapshot ? "Restored saved run" : "Saved automatically"}</span>
+          <div class="results-summary" class:celebrating={celebrationState.active}>
+            <div class="results-summary-grid">
+              <div class="results-summary-lead">
+                <div class="panel-label">Episode Complete</div>
+                <h3 class="results-summary-title">{activeTask?.title ?? "Scenario complete"}</h3>
+                <p class="results-summary-copy">The score is locked in. Open the captured submissions only when you want details, so the scorecard stays front and center.</p>
+                <div class="summary-actions">
+                  <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
+                    {isRunningBaseline ? "Running..." : "Run AI Baseline"}
+                  </button>
+                  <button class="btn btn-outline" on:click={restartCurrentTask} disabled={isBusy}>
+                    Restart Task
+                  </button>
+                </div>
+              </div>
+
+              <div class="results-stat-card highlight">
+                <span class="results-stat-label">Episode Score</span>
+                <strong>{formatReward(cumulativeBreakdown.total)}</strong>
+                <small>{evaluation.stepHistory.length}/{phaseOrder.length} steps completed</small>
+              </div>
+
+              <div class="results-stat-card">
+                <span class="results-stat-label">Signals Hit</span>
+                <strong>{matchedEpisodeSignals.length}</strong>
+                <small>{matchedEpisodeSignals.slice(0, 2).join(" · ") || "No strong matches yet"}</small>
+              </div>
+
+              <div class="results-stat-card">
+                <span class="results-stat-label">Best Step</span>
+                <strong>{bestStepRecord ? phaseLabels[bestStepRecord.phase] : "—"}</strong>
+                <small>{bestStepRecord ? `${formatReward(bestStepRecord.reward.breakdown.total)} step score` : "No scored step yet"}</small>
+              </div>
+
+              <div class="results-stat-card">
+                <span class="results-stat-label">Open Gaps</span>
+                <strong>{missingEpisodeSignals.length}</strong>
+                <small>{missingEpisodeSignals[0] ?? "No critical gaps left"}</small>
+              </div>
             </div>
-            <p class="submission-summary-copy">
-              The episode is complete. Use the tabs on the right to inspect the scorecard, signals, history, and auditor view without stretching the page.
-            </p>
-            <div class="summary-action-row">
-              <button class="btn btn-outline" on:click={() => retryTask(currentTaskId)}>Retry Task</button>
+            <div class="summary-chip-row">
+              <span class="chip chip-green">Completed</span>
+              <span class="chip chip-neutral">Score {formatReward(cumulativeBreakdown.total)}</span>
+              <span class="chip chip-neutral">{evaluation.stepHistory.length}/{phaseOrder.length} steps</span>
             </div>
           </div>
 
-          <details class="submission-drawer">
-            <summary>Review transcript</summary>
-            <pre class="submission-preview">{combinedReviewText() || reviewText || "No review transcript captured."}</pre>
+          <details class="summary-drawer">
+            <summary>
+              <div class="summary-drawer-title">
+                <span>Submission Highlights</span>
+                <small>{matchedEpisodeSignals.length} matched signals · {missingEpisodeSignals.length} gaps</small>
+              </div>
+              <div class="summary-drawer-meta">
+                <span>{evaluation.stepHistory.length} scored steps</span>
+                <span class="summary-drawer-hint">View details</span>
+              </div>
+            </summary>
+            <div class="summary-list">
+              {#each evaluation.stepHistory as record}
+                <article class="summary-card">
+                  <div class="summary-card-top">
+                    <div>
+                      <strong>{phaseLabels[record.phase]}</strong>
+                      <span>{record.action.type}</span>
+                    </div>
+                    <div class="summary-score">{formatReward(record.reward.breakdown.total)}</div>
+                  </div>
+                  <p class="summary-copy">{historyPreview(record)}</p>
+                  <p class="summary-feedback">{historyFeedbackPreview(record)}</p>
+                </article>
+              {/each}
+            </div>
           </details>
-
-          {#if fixCode.trim()}
-            <details class="submission-drawer">
-              <summary>Submitted fix</summary>
-              <pre class="submission-preview code-font">{fixCode}</pre>
-            </details>
-          {/if}
         {:else}
           <div class="submission-note">
             <div>
@@ -899,12 +1054,15 @@
             <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
               {isRunningBaseline ? "Running..." : "Run AI Baseline"}
             </button>
+            <button class="btn btn-outline" on:click={restartCurrentTask} disabled={isBusy}>
+              Restart Task
+            </button>
             <button class="btn btn-ghost" on:click={clearCurrentInput}>Clear</button>
           </div>
         {/if}
       </section>
 
-      <section class="panel eval-panel">
+	      <section class="panel eval-panel" bind:this={evaluationPanelEl}>
         <div class="panel-header">
           <div>
             <div class="panel-label">Evaluation</div>
@@ -918,121 +1076,95 @@
             <p>Preparing the environment...</p>
           </div>
         {:else if evaluation.reward !== null}
-          <div class="score-display {tone}">
+	          <div class="score-display {tone}" class:celebrating={celebrationState.active}>
             <div class="score-number">{formatReward(cumulativeBreakdown.total)}</div>
             <div class="score-verdict">Episode Total / 1.00</div>
             <div class="score-subline">Latest step: {formatReward(evaluation.reward)} · {evaluation.currentStep?.verdict?.replaceAll("_", " ") ?? "evaluated"}</div>
           </div>
 
-          <div class="eval-tabs">
-            {#each evalTabs as tab}
-              <button
-                type="button"
-                class="eval-tab"
-                class:active={activeEvalTab === tab.key}
-                on:click={() => activeEvalTab = tab.key}
-              >
-                {tab.label}
-              </button>
-            {/each}
+          <div class="eval-section">
+            <div class="eval-label">Coach Feedback</div>
+            <p class="typewriter-text">{typedNarration}</p>
           </div>
 
-          {#if activeEvalTab === "overview"}
-            <div class="eval-section">
-              <div class="eval-label">Coach Feedback</div>
-              <p class="typewriter-text">{typedNarration}</p>
-            </div>
-
-            <div class="eval-section">
-              <div class="eval-label">Reward Breakdown</div>
-              <div class="breakdown-list">
-                {#each breakdownRows as row}
-                  <div class="breakdown-row">
-                    <div class="breakdown-head">
-                      <span>{row.label}</span>
-                      <strong>{formatReward(row.value)} / {row.max.toFixed(1)}</strong>
-                    </div>
-                    <div class="breakdown-bar">
-                      <div class="breakdown-fill" style={`width: ${clampPercent(row.value, row.max)}`}></div>
-                    </div>
+          <div class="eval-section">
+            <div class="eval-label">Reward Breakdown</div>
+            <div class="breakdown-list">
+              {#each breakdownRows as row}
+                <div class="breakdown-row">
+                  <div class="breakdown-head">
+                    <span>{row.label}</span>
+                    <strong>{formatReward(row.value)} / {row.max.toFixed(1)}</strong>
                   </div>
-                {/each}
-              </div>
-
-              <div class="meta-chip-row">
-                <span class="chip chip-green">Structure bonus: {formatReward(cumulativeBreakdown.structure_bonus)}</span>
-                <span class="chip chip-red">Irrelevant penalty: {formatReward(cumulativeBreakdown.irrelevant_penalty)}</span>
-                <span class="chip chip-red">Hallucinated fix penalty: {formatReward(cumulativeBreakdown.hallucinated_fix_penalty)}</span>
-              </div>
+                  <div class="breakdown-bar">
+                    <div class="breakdown-fill" style={`width: ${clampPercent(row.value, row.max)}`}></div>
+                  </div>
+                </div>
+              {/each}
             </div>
 
-            <div class="eval-meta">
-              <div><span>Mode</span><strong>{backendLabel}</strong></div>
-              <div><span>Backend</span><strong>{evaluation.info?.grading_backend ?? "deterministic_v2"}</strong></div>
-              <div><span>Episode</span><strong>{isEpisodeDone ? "Complete" : "In progress"}</strong></div>
+            <div class="meta-chip-row">
+              <span class="chip chip-green">Structure bonus: {formatReward(cumulativeBreakdown.structure_bonus)}</span>
+              <span class="chip chip-red">Irrelevant penalty: {formatReward(cumulativeBreakdown.irrelevant_penalty)}</span>
+              <span class="chip chip-red">Hallucinated fix penalty: {formatReward(cumulativeBreakdown.hallucinated_fix_penalty)}</span>
             </div>
-          {:else if activeEvalTab === "signals"}
-            <div class="eval-section">
-              <div class="eval-label">Latest Signals</div>
-              <div class="chip-group">
-                {#each listOrFallback(latestMatched, "No strong matches yet") as keyword}
-                  <span class="chip chip-green">{keyword}</span>
-                {/each}
-              </div>
-            </div>
+          </div>
 
-            <div class="eval-section">
-              <div class="eval-label">Missing Signals</div>
-              <div class="chip-group">
-                {#each listOrFallback(latestMissing, "Nothing critical missing") as keyword}
-                  <span class="chip chip-red">{keyword}</span>
-                {/each}
-              </div>
+          <div class="eval-section">
+            <div class="eval-label">Latest Signals</div>
+            <div class="chip-group">
+              {#each listOrFallback(latestMatched, "No strong matches yet") as keyword}
+                <span class="chip chip-green">{keyword}</span>
+              {/each}
             </div>
-          {:else if activeEvalTab === "history"}
-            <div class="eval-section history-section">
-              <div class="eval-label">Step History</div>
-              <div class="history-list">
-                {#each evaluation.stepHistory as record, index}
-                  <div class="history-card">
-                    <div class="history-top">
-                      <div>
-                        <strong>{phaseLabels[record.phase]}</strong>
-                        <span>{record.action.type}</span>
-                      </div>
-                      <div class="history-score">{formatReward(record.reward.breakdown.total)}</div>
-                    </div>
-                    <p class="history-copy">{historyPreview(record)}</p>
-                    <div class="history-detail">
-                      <span class="history-detail-label">Coach note</span>
-                      <p>{historyFeedbackPreview(record)}</p>
-                    </div>
-                    <div class="history-footer">
-                      <span>Step {index + 1}</span>
-                      <span>{record.reward.verdict.replaceAll("_", " ")}</span>
+          </div>
+
+          <div class="eval-section">
+            <div class="eval-label">Missing Signals</div>
+            <div class="chip-group">
+              {#each listOrFallback(latestMissing, "Nothing critical missing") as keyword}
+                <span class="chip chip-red">{keyword}</span>
+              {/each}
+            </div>
+          </div>
+
+          <div class="eval-section">
+            <div class="eval-label">Step History</div>
+            <div class="history-list">
+              {#each evaluation.stepHistory as record}
+                <div class="history-card">
+                  <div class="history-top">
+                    <div>
+                      <strong>{phaseLabels[record.phase]}</strong>
                       <span>{record.action.type}</span>
                     </div>
+                    <div class="history-score">{formatReward(record.reward.breakdown.total)}</div>
                   </div>
-                {/each}
-              </div>
+                  <p class="history-copy">{record.action.content}</p>
+                  <div class="history-footer">
+                    <span>{record.reward.verdict.replaceAll("_", " ")}</span>
+                    <span>{record.reward.feedback || record.reward.rationale}</span>
+                  </div>
+                </div>
+              {/each}
             </div>
-          {:else if activeEvalTab === "opinion"}
-            {#if secondOpinionText}
-              <div class="eval-section auditor-panel">
-                <div class="eval-label auditor-label">Auditor Second Opinion</div>
-                <p class="auditor-text">{secondOpinionText}</p>
-              </div>
-            {:else}
-              <div class="eval-section opinion-empty">
-                <div class="eval-label">Auditor Second Opinion</div>
-                <p>Keep the main scorecard compact, and pull in an auditor only when you want another lens on the submission.</p>
-                {#if evaluation.stepHistory.length > 0}
-                  <button class="btn btn-outline opinion-btn" on:click={getSecondOpinion} disabled={isGettingOpinion}>
-                    {isGettingOpinion ? "Consulting..." : "Request Second Opinion"}
-                  </button>
-                {/if}
-              </div>
-            {/if}
+          </div>
+
+          <div class="eval-meta">
+            <div><span>Mode</span><strong>{backendLabel}</strong></div>
+            <div><span>Backend</span><strong>{evaluation.info?.grading_backend ?? "deterministic_v2"}</strong></div>
+            <div><span>Episode</span><strong>{isEpisodeDone ? "Complete" : "In progress"}</strong></div>
+          </div>
+
+          {#if secondOpinionText}
+            <div class="eval-section auditor-panel">
+              <div class="eval-label auditor-label">Auditor Second Opinion</div>
+              <p class="auditor-text">{secondOpinionText}</p>
+            </div>
+          {:else if evaluation.stepHistory.length > 0}
+            <button class="btn btn-outline auditor-btn" on:click={getSecondOpinion} disabled={isGettingOpinion}>
+              {isGettingOpinion ? "Consulting..." : "Request Second Opinion"}
+            </button>
           {/if}
         {:else}
           <div class="empty-eval">
@@ -1162,15 +1294,199 @@
     color: var(--text-secondary);
   }
 
+  .completion-banner {
+    position: fixed;
+    top: 72px;
+    right: 24px;
+    left: calc(300px + 20px);
+    z-index: 120;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 14px 18px;
+    border-radius: 18px;
+    border: 1px solid rgba(59, 130, 246, 0.28);
+    background:
+      linear-gradient(120deg, rgba(59, 130, 246, 0.16), rgba(8, 145, 178, 0.08) 45%, rgba(15, 23, 42, 0.92)),
+      rgba(9, 9, 11, 0.92);
+    box-shadow: 0 20px 60px rgba(2, 6, 23, 0.45);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    overflow: hidden;
+    animation: completion-slide 380ms cubic-bezier(0.2, 0.9, 0.2, 1);
+  }
+
+  .emoji-shower {
+    position: fixed;
+    top: 72px;
+    left: calc(300px + 20px);
+    right: 24px;
+    height: 360px;
+    z-index: 119;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .emoji-particle {
+    position: absolute;
+    opacity: 0;
+    transform: translate3d(0, -18px, 0) scale(0.7) rotate(0deg);
+    animation-name: emoji-fall;
+    animation-timing-function: cubic-bezier(0.18, 0.72, 0.24, 1);
+    animation-fill-mode: forwards;
+    filter: drop-shadow(0 8px 18px rgba(2, 6, 23, 0.28));
+  }
+
+  .completion-banner::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(115deg, transparent 18%, rgba(255,255,255,0.12) 34%, transparent 50%);
+    transform: translateX(-130%);
+    animation: completion-sheen 2.8s ease-out infinite;
+    pointer-events: none;
+  }
+
+  .completion-banner.baseline {
+    border-color: rgba(245, 158, 11, 0.34);
+    background:
+      linear-gradient(120deg, rgba(245, 158, 11, 0.16), rgba(34, 197, 94, 0.1) 50%, rgba(15, 23, 42, 0.92)),
+      rgba(9, 9, 11, 0.92);
+  }
+
+  .completion-copy,
+  .completion-icon,
+  .completion-score {
+    position: relative;
+    z-index: 1;
+  }
+
+  .completion-icon {
+    width: 52px;
+    height: 52px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 16px;
+    font-size: 1.7rem;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+    animation: completion-pop 520ms cubic-bezier(0.2, 0.9, 0.2, 1);
+  }
+
+  .completion-banner.baseline .completion-icon {
+    background: rgba(245, 158, 11, 0.14);
+    border-color: rgba(245, 158, 11, 0.24);
+  }
+
+  .completion-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .completion-kicker {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(191, 219, 254, 0.92);
+  }
+
+  .completion-copy strong {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .completion-detail {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+
+  .completion-score {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+    white-space: nowrap;
+  }
+
+  .completion-score span {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-tertiary);
+  }
+
+  .completion-score strong {
+    font-family: var(--font-display);
+    font-size: 2rem;
+    line-height: 1;
+    color: #facc15;
+  }
+
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
   }
 
+  @keyframes completion-slide {
+    from {
+      opacity: 0;
+      transform: translateY(-12px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes completion-pop {
+    0% {
+      opacity: 0;
+      transform: scale(0.78) rotate(-10deg);
+    }
+    60% {
+      opacity: 1;
+      transform: scale(1.08) rotate(4deg);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1) rotate(0deg);
+    }
+  }
+
+  @keyframes emoji-fall {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, -18px, 0) scale(0.7) rotate(0deg);
+    }
+    10% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translate3d(var(--emoji-drift), 330px, 0) scale(1.02) rotate(var(--emoji-rotate));
+    }
+  }
+
+  @keyframes completion-sheen {
+    0% {
+      transform: translateX(-130%);
+    }
+    55%, 100% {
+      transform: translateX(130%);
+    }
+  }
+
   .page-wrapper {
     display: grid;
     grid-template-columns: 300px 1fr;
-    height: calc(100dvh - 56px);
     min-height: calc(100vh - 56px);
   }
 
@@ -1258,6 +1574,10 @@
     border-left: 3px solid var(--green);
   }
 
+  .task-card.has-progress:not(.solved) {
+    border-left: 3px solid rgba(59, 130, 246, 0.8);
+  }
+
   .task-row {
     display: flex;
     align-items: center;
@@ -1294,33 +1614,40 @@
     padding-left: 16px;
   }
 
-  .task-saved-row {
+  .task-status-row {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
     padding-left: 16px;
-    margin-top: 6px;
+    margin-top: 4px;
   }
 
-  .task-saved-badge {
+  .task-status-badge {
     font-size: 0.62rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    padding: 3px 6px;
+    padding: 3px 7px;
     border-radius: 999px;
+    border: 1px solid var(--border);
     background: rgba(255,255,255,0.05);
     color: var(--text-secondary);
-    border: 1px solid var(--border);
   }
 
-  .task-saved-badge.completed {
+  .task-status-badge.submitted {
+    color: #93c5fd;
+    background: rgba(59, 130, 246, 0.12);
+    border-color: rgba(59, 130, 246, 0.3);
+  }
+
+  .task-status-badge.completed {
     color: var(--green);
     background: var(--green-bg);
-    border-color: rgba(34,197,94,0.22);
+    border-color: rgba(34,197,94,0.24);
   }
 
-  .task-saved-copy {
+  .task-status-copy {
     font-size: 0.68rem;
     color: var(--text-secondary);
   }
@@ -1494,28 +1821,10 @@
   .code-toolbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
+    gap: 8px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
     background: rgba(255,255,255,0.02);
-  }
-
-  .code-toolbar-left,
-  .code-toolbar-meta {
-    display: flex;
-    align-items: center;
-  }
-
-  .code-toolbar-left {
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .code-toolbar-meta {
-    gap: 8px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
   }
 
   .toolbar-dot {
@@ -1533,69 +1842,16 @@
     font-size: 0.78rem;
     color: var(--text-tertiary);
     font-family: var(--font-mono);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .code-meta-pill {
-    padding: 4px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: rgba(255,255,255,0.03);
-    color: var(--text-secondary);
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
   }
 
   .code-block {
-    overflow: auto;
-    min-height: 148px;
-    max-height: min(48vh, 420px);
-    background:
-      linear-gradient(180deg, rgba(59, 130, 246, 0.04), transparent 18%),
-      transparent;
-  }
-
-  .code-lines {
-    min-width: 100%;
-    width: max-content;
-    padding: 14px 0;
+    margin: 0;
+    padding: 18px;
+    overflow-x: auto;
     font-family: var(--font-mono);
     font-size: 0.88rem;
-    line-height: 1.7;
-  }
-
-  .code-line {
-    display: grid;
-    grid-template-columns: 52px minmax(0, 1fr);
-    align-items: start;
-    min-height: 28px;
-  }
-
-  .code-line:hover {
-    background: rgba(255,255,255,0.02);
-  }
-
-  .code-line-number {
-    padding: 0 12px 0 16px;
-    color: var(--text-tertiary);
-    text-align: right;
-    user-select: none;
-    border-right: 1px solid rgba(255,255,255,0.05);
-    background: rgba(12, 12, 14, 0.92);
-    position: sticky;
-    left: 0;
-    z-index: 1;
-  }
-
-  .code-line-content {
-    display: block;
-    padding: 0 20px 0 16px;
-    color: var(--text-primary);
-    white-space: pre;
+    line-height: 1.75;
+    background: transparent !important;
   }
 
   .two-col {
@@ -1606,7 +1862,7 @@
   }
 
   .two-col.results-mode {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .review-panel,
@@ -1662,18 +1918,95 @@
     color: #fbbf24;
   }
 
-  .submission-summary {
-    padding: 16px 20px 6px;
+  .results-summary {
+    padding: 18px 20px 14px;
     display: flex;
     flex-direction: column;
     gap: 12px;
+    background:
+      radial-gradient(circle at top right, rgba(250, 204, 21, 0.08), transparent 34%),
+      linear-gradient(180deg, rgba(255,255,255,0.02), transparent 80%);
   }
 
-  .submission-summary-copy {
+  .results-summary.celebrating {
+    animation: results-glow 1.2s ease;
+  }
+
+  .results-summary-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 1.4fr) repeat(4, minmax(130px, 1fr));
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .results-summary-lead,
+  .results-stat-card {
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.02);
+  }
+
+  .results-summary-lead {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .results-summary-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .results-summary-copy {
     margin: 0;
     color: var(--text-secondary);
-    font-size: 0.84rem;
-    line-height: 1.6;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    max-width: 640px;
+  }
+
+  .results-stat-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px;
+    min-width: 0;
+  }
+
+  .results-stat-card.highlight {
+    background: linear-gradient(180deg, rgba(250, 204, 21, 0.09), rgba(255,255,255,0.03));
+    border-color: rgba(250, 204, 21, 0.18);
+  }
+
+  .results-stat-label {
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .results-stat-card strong {
+    color: var(--text-primary);
+    font-family: var(--font-display);
+    font-size: 1.2rem;
+    line-height: 1.15;
+  }
+
+  .results-stat-card.highlight strong {
+    font-size: 2rem;
+    color: #facc15;
+  }
+
+  .results-stat-card small {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.45;
   }
 
   .summary-chip-row {
@@ -1682,47 +2015,121 @@
     gap: 8px;
   }
 
-  .summary-action-row {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-
-  .submission-drawer {
-    margin: 0 20px 16px;
+  .summary-drawer {
+    margin: 0 20px 18px;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    background: rgba(255,255,255,0.02);
+    background: rgba(255,255,255,0.015);
     overflow: hidden;
   }
 
-  .submission-drawer summary {
+  .summary-drawer summary {
     list-style: none;
-    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
     padding: 12px 14px;
-    font-size: 0.82rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
     font-weight: 600;
-    color: var(--text-primary);
     border-bottom: 1px solid transparent;
   }
 
-  .submission-drawer[open] summary {
-    border-bottom-color: var(--border);
-  }
-
-  .submission-drawer summary::-webkit-details-marker {
+  .summary-drawer summary::-webkit-details-marker {
     display: none;
   }
 
-  .submission-preview {
-    margin: 0;
+  .summary-drawer[open] summary {
+    border-bottom-color: var(--border);
+    color: var(--text-primary);
+  }
+
+  .summary-drawer-title,
+  .summary-drawer-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .summary-drawer-title {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .summary-drawer-title small,
+  .summary-drawer-hint {
+    color: var(--text-tertiary);
+    font-size: 0.72rem;
+    font-weight: 500;
+  }
+
+  .summary-drawer-hint {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .summary-list {
     padding: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .summary-card {
+    flex: 1 1 240px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    min-width: 0;
+    align-self: flex-start;
+  }
+
+  .summary-card-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  .summary-card-top strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: 0.88rem;
+  }
+
+  .summary-card-top span {
+    color: var(--text-tertiary);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .summary-score {
     font-family: var(--font-mono);
-    font-size: 0.82rem;
-    line-height: 1.7;
+    color: var(--text-primary);
+    white-space: nowrap;
+  }
+
+  .summary-copy,
+  .summary-feedback {
+    margin: 0;
+    font-size: 0.8rem;
+    line-height: 1.55;
+  }
+
+  .summary-copy {
     color: var(--text-secondary);
-    white-space: pre-wrap;
-    overflow-x: auto;
+  }
+
+  .summary-feedback {
+    margin-top: 10px;
+    color: var(--text-tertiary);
   }
 
   .review-textarea {
@@ -1751,9 +2158,17 @@
   .review-actions {
     display: flex;
     gap: 8px;
+    flex-wrap: wrap;
     padding: 12px 20px;
     border-top: 1px solid var(--border);
     background: rgba(255,255,255,0.015);
+  }
+
+  .summary-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .btn {
@@ -1791,6 +2206,27 @@
     align-items: center;
     padding: 22px 20px 16px;
     gap: 6px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .score-display.celebrating::before {
+    content: "";
+    position: absolute;
+    inset: -30% -20%;
+    background: radial-gradient(circle, rgba(250, 204, 21, 0.16), transparent 55%);
+    animation: score-bloom 1.4s ease-out;
+    pointer-events: none;
+  }
+
+  .score-display.celebrating::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, transparent 12%, rgba(255,255,255,0.12) 30%, transparent 48%);
+    transform: translateX(-120%);
+    animation: score-sheen 1.6s ease-out;
+    pointer-events: none;
   }
 
   .score-number {
@@ -1809,6 +2245,44 @@
   .score-display.yellow { background: rgba(234,179,8,0.04); }
   .score-display.red { background: rgba(239,68,68,0.04); }
 
+  @keyframes results-glow {
+    0% {
+      box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0);
+      transform: translateY(0);
+    }
+    40% {
+      box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.2), 0 12px 30px rgba(250, 204, 21, 0.08);
+      transform: translateY(-1px);
+    }
+    100% {
+      box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0);
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes score-bloom {
+    0% {
+      opacity: 0;
+      transform: scale(0.8);
+    }
+    20% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: scale(1.15);
+    }
+  }
+
+  @keyframes score-sheen {
+    0% {
+      transform: translateX(-120%);
+    }
+    100% {
+      transform: translateX(120%);
+    }
+  }
+
   .score-verdict {
     font-size: 0.78rem;
     text-transform: uppercase;
@@ -1820,34 +2294,6 @@
   .score-subline {
     font-size: 0.82rem;
     color: var(--text-secondary);
-  }
-
-  .eval-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 0 20px 14px;
-    border-top: 1px solid var(--border);
-    background: rgba(255,255,255,0.015);
-  }
-
-  .eval-tab {
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--text-secondary);
-    border-radius: 999px;
-    padding: 8px 12px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
-  }
-
-  .eval-tab.active {
-    border-color: var(--border-hover);
-    background: rgba(255,255,255,0.06);
-    color: var(--text-primary);
   }
 
   .eval-section {
@@ -1953,9 +2399,6 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    max-height: 440px;
-    overflow-y: auto;
-    padding-right: 4px;
   }
 
   .history-card {
@@ -1996,31 +2439,6 @@
     font-size: 0.84rem;
     line-height: 1.6;
     white-space: pre-wrap;
-  }
-
-  .history-detail {
-    margin-top: 12px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: rgba(255,255,255,0.015);
-  }
-
-  .history-detail-label {
-    display: block;
-    margin-bottom: 6px;
-    color: var(--accent);
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-weight: 700;
-  }
-
-  .history-detail p {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    line-height: 1.6;
   }
 
   .history-footer {
@@ -2103,22 +2521,6 @@
     border: 1px solid rgba(245, 158, 11, 0.24);
   }
 
-  .opinion-empty {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-
-  .opinion-empty p {
-    margin: 0;
-    color: var(--text-secondary);
-    line-height: 1.65;
-  }
-
-  .opinion-btn {
-    width: fit-content;
-  }
-
   .auditor-label {
     color: #fbbf24;
   }
@@ -2134,7 +2536,6 @@
   @media (max-width: 1100px) {
     .page-wrapper {
       grid-template-columns: 1fr;
-      height: auto;
     }
 
     .sidebar {
@@ -2168,23 +2569,43 @@
       flex-direction: column;
     }
 
-    .eval-tabs,
-    .summary-chip-row {
-      align-items: stretch;
-    }
-
     .prompt-top,
     .history-top {
       flex-direction: column;
     }
 
-    .code-toolbar {
-      align-items: flex-start;
+    .summary-chip-row {
+      align-items: stretch;
+    }
+
+    .results-summary-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .results-summary-lead {
       flex-direction: column;
     }
 
-    .code-toolbar-meta {
+    .summary-actions {
       justify-content: flex-start;
+    }
+
+    .summary-drawer summary,
+    .summary-drawer-meta {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+
+  @media (max-width: 1100px) {
+    .completion-banner {
+      left: 20px;
+      right: 20px;
+    }
+
+    .emoji-shower {
+      left: 20px;
+      right: 20px;
     }
   }
 </style>
