@@ -15,6 +15,7 @@
   hljs.registerLanguage("go", go);
 
   const SOLVED_THRESHOLD = 0.85;
+  const TASK_SNAPSHOT_STORAGE_KEY = "cr_task_snapshots_v1";
   const phaseOrder = ["identify_bug", "explain_issue", "fix_code"];
   const phaseLabels = {
     identify_bug: "Identify Bug",
@@ -25,6 +26,30 @@
     identify_bug: "Call out the main defect, vulnerability, or failure mode.",
     explain_issue: "Explain why the issue matters in production or security terms.",
     fix_code: "Provide corrected code that resolves the root cause.",
+  };
+  const evalTabs = [
+    { key: "overview", label: "Overview" },
+    { key: "signals", label: "Signals" },
+    { key: "history", label: "History" },
+    { key: "opinion", label: "Second Opinion" },
+  ];
+  const highlightLanguageMap = {
+    python: "python",
+    sql: "sql",
+    javascript: "javascript",
+    react: "javascript",
+    html: "xml",
+    xml: "xml",
+    go: "go",
+  };
+  const fileExtensionMap = {
+    python: "py",
+    sql: "sql",
+    javascript: "js",
+    react: "jsx",
+    html: "html",
+    xml: "xml",
+    go: "go",
   };
 
   function emptyBreakdown() {
@@ -67,6 +92,9 @@
   let secondOpinionText = "";
   let backendLabel = "manual";
   let selectedDifficulty = "all";
+  let activeEvalTab = "overview";
+  let savedTaskSnapshots = {};
+  let restoredFromSnapshot = false;
   let reviewTextareaEl;
 
   let evaluation = emptyEvaluation();
@@ -78,7 +106,10 @@
   $: isBusy = isSubmitting || isRunningBaseline || isLoadingTask;
   $: filteredTasks = selectedDifficulty === "all" ? tasks : tasks.filter((task) => task.difficulty === selectedDifficulty);
   $: activeTask = tasks.find((task) => task.task_id === currentTaskId) ?? taskMeta;
-  $: highlightedCode = observation ? hljs.highlightAuto(observation.code).value : "";
+  $: codeLanguage = highlightLanguageMap[activeTask?.language] ?? null;
+  $: normalizedCode = normalizeCode(observation?.code ?? "");
+  $: codeFilename = buildCodeFilename(observation?.task_id, activeTask?.language);
+  $: codeLines = buildCodeLines(normalizedCode, codeLanguage);
   $: currentPhase = observation?.phase ?? "identify_bug";
   $: expectedActionType = observation?.expected_action_type ?? "review";
   $: isEpisodeDone = environmentState?.done ?? evaluation.done;
@@ -92,6 +123,7 @@
   $: latestMatched = evaluation.currentStep?.matched_keywords ?? [];
   $: latestMissing = evaluation.currentStep?.missing_keywords ?? [];
   $: tone = cumulativeBreakdown.total >= SOLVED_THRESHOLD ? "green" : cumulativeBreakdown.total >= 0.45 ? "yellow" : cumulativeBreakdown.total > 0 ? "red" : "neutral";
+  $: isResultsMode = isEpisodeDone && evaluation.stepHistory.length > 0;
 
   function stopTyping(key) {
     const job = typingTimers.get(key);
@@ -187,6 +219,96 @@
     } catch (error) {}
   }
 
+  function loadTaskSnapshots() {
+    try {
+      const raw = localStorage.getItem(TASK_SNAPSHOT_STORAGE_KEY);
+      savedTaskSnapshots = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+      savedTaskSnapshots = {};
+    }
+  }
+
+  function saveTaskSnapshots() {
+    try {
+      localStorage.setItem(TASK_SNAPSHOT_STORAGE_KEY, JSON.stringify(savedTaskSnapshots));
+    } catch (error) {}
+  }
+
+  function snapshotScore(snapshot) {
+    return snapshot?.evaluation?.cumulativeBreakdown?.total ?? snapshot?.environmentState?.cumulative_reward ?? 0;
+  }
+
+  function snapshotStepLabel(snapshot) {
+    if (!snapshot) return "";
+    if (snapshot.completed) {
+      return `Completed · ${formatReward(snapshotScore(snapshot))}`;
+    }
+
+    const nextStep = Math.min((snapshot.environmentState?.step_count ?? 0) + 1, 3);
+    return `Resume at step ${nextStep}/3`;
+  }
+
+  function persistCurrentTaskSnapshot() {
+    if (!currentTaskId || !observation || evaluation.stepHistory.length === 0) {
+      return;
+    }
+
+    savedTaskSnapshots = {
+      ...savedTaskSnapshots,
+      [currentTaskId]: {
+        taskMeta,
+        observation,
+        environmentState,
+        reviewText,
+        fixCode,
+        mode,
+        secondOpinionText,
+        backendLabel,
+        evaluation,
+        typedNarration,
+        completed: isEpisodeDone,
+        savedAt: Date.now(),
+      },
+    };
+    saveTaskSnapshots();
+  }
+
+  function restoreTaskSnapshot(taskId) {
+    const snapshot = savedTaskSnapshots[taskId];
+    if (!snapshot) {
+      return false;
+    }
+
+    currentTaskId = taskId;
+    taskMeta = snapshot.taskMeta ?? tasks.find((task) => task.task_id === taskId) ?? null;
+    observation = snapshot.observation ?? null;
+    environmentState = snapshot.environmentState ?? null;
+    reviewText = snapshot.reviewText ?? "";
+    fixCode = snapshot.fixCode ?? "";
+    mode = snapshot.mode ?? "review";
+    secondOpinionText = snapshot.secondOpinionText ?? "";
+    backendLabel = snapshot.backendLabel ?? "manual";
+    evaluation = snapshot.evaluation ?? emptyEvaluation();
+    typedNarration = snapshot.typedNarration ?? summarizeEpisode(snapshot.evaluation?.stepHistory ?? []);
+    activeEvalTab = snapshot.completed ? "overview" : activeEvalTab;
+    restoredFromSnapshot = true;
+    statusText = snapshot.completed
+      ? "Restored completed episode."
+      : `Restored saved progress for ${taskMeta?.title ?? taskId}.`;
+    return true;
+  }
+
+  function clearTaskSnapshot(taskId = currentTaskId) {
+    if (!taskId || !savedTaskSnapshots[taskId]) {
+      return;
+    }
+
+    const nextSnapshots = { ...savedTaskSnapshots };
+    delete nextSnapshots[taskId];
+    savedTaskSnapshots = nextSnapshots;
+    saveTaskSnapshots();
+  }
+
   function fireConfetti() {
     confetti({ particleCount: 120, spread: 80, origin: { y: 0.7 }, colors: ["#3b82f6", "#22c55e", "#f59e0b", "#fff"], zIndex: 99999 });
   }
@@ -206,6 +328,8 @@
     evaluation = emptyEvaluation();
     secondOpinionText = "";
     typedNarration = "";
+    activeEvalTab = "overview";
+    restoredFromSnapshot = false;
     stopAllTyping();
   }
 
@@ -253,6 +377,60 @@
     return reviewSteps
       .map((record) => `${phaseLabels[record.phase]}: ${record.action.content}`)
       .join("\n\n");
+  }
+
+  function escapeHtml(value) {
+    return value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+  }
+
+  function normalizeCode(code) {
+    return String(code ?? "").replace(/\r\n/g, "\n").replace(/\t/g, "  ").trimEnd();
+  }
+
+  function highlightLine(line, language) {
+    const content = line.length > 0 ? line : " ";
+
+    try {
+      if (language) {
+        return hljs.highlight(content, { language, ignoreIllegals: true }).value;
+      }
+      return hljs.highlightAuto(content).value;
+    } catch (error) {
+      return escapeHtml(content);
+    }
+  }
+
+  function buildCodeLines(code, language) {
+    const lines = (code || "").split("\n");
+    const safeLines = lines.length > 0 ? lines : [""];
+    return safeLines.map((line, index) => ({
+      number: index + 1,
+      html: highlightLine(line, language),
+    }));
+  }
+
+  function buildCodeFilename(taskId, language) {
+    const extension = fileExtensionMap[language] ?? "txt";
+    return `${taskId ?? "snippet"}.${extension}`;
+  }
+
+  function historyPreview(record) {
+    const text = record.action.content.trim();
+    if (text.length <= 180) {
+      return text;
+    }
+    return `${text.slice(0, 180).trim()}...`;
+  }
+
+  function historyFeedbackPreview(record) {
+    const feedback = (record.reward.feedback || record.reward.rationale || "").trim();
+    if (feedback.length <= 140) {
+      return feedback;
+    }
+    return `${feedback.slice(0, 140).trim()}...`;
   }
 
   function phaseIndex(phase) {
@@ -319,6 +497,7 @@
     };
 
     backendLabel = data.backend ?? source;
+    restoredFromSnapshot = false;
 
     if (data.submitted_fixed_code) {
       fixCode = data.submitted_fixed_code;
@@ -339,10 +518,13 @@
     }
 
     if (data.done) {
+      activeEvalTab = "overview";
       statusText = `Episode complete: ${formatReward(data.state?.cumulative_reward)} / 1.00`;
     } else {
       statusText = `${phaseLabels[observation.phase]} ready`;
     }
+
+    persistCurrentTaskSnapshot();
   }
 
   async function loadTasks() {
@@ -361,8 +543,13 @@
     }
   }
 
-  async function loadTask(taskId, { preserveInputs = true } = {}) {
+  async function loadTask(taskId, { preserveInputs = true, restoreSaved = true } = {}) {
     if (!taskId) return;
+
+    if (restoreSaved && restoreTaskSnapshot(taskId)) {
+      return;
+    }
+
     isLoadingTask = true;
     try {
       const data = await fetchJson(`/api/tasks/${encodeURIComponent(taskId)}`);
@@ -382,6 +569,13 @@
     } finally {
       isLoadingTask = false;
     }
+  }
+
+  async function retryTask(taskId = currentTaskId) {
+    if (!taskId) return;
+    clearTaskSnapshot(taskId);
+    await loadTask(taskId, { preserveInputs: false, restoreSaved: false });
+    statusText = "Started a fresh run for this task.";
   }
 
   async function submitCurrentAction() {
@@ -463,7 +657,9 @@
         body: JSON.stringify({ task_id: currentTaskId, review: transcript }),
       });
       await streamSecondOpinion(data.second_opinion);
+      activeEvalTab = "opinion";
       statusText = "Second opinion received";
+      persistCurrentTaskSnapshot();
     } catch (error) {
       secondOpinionText = "Failed to get second opinion.";
       statusText = "Auditor error";
@@ -482,6 +678,7 @@
 
   onMount(() => {
     loadStats();
+    loadTaskSnapshots();
     loadTasks();
   });
 
@@ -541,6 +738,14 @@
             {/if}
           </div>
           <span class="task-meta">{task.difficulty} · {task.category} · {task.language}</span>
+          {#if savedTaskSnapshots[task.task_id]}
+            <div class="task-saved-row">
+              <span class="task-saved-badge" class:completed={savedTaskSnapshots[task.task_id].completed}>
+                {savedTaskSnapshots[task.task_id].completed ? "Completed" : "Saved"}
+              </span>
+              <span class="task-saved-copy">{snapshotStepLabel(savedTaskSnapshots[task.task_id])}</span>
+            </div>
+          {/if}
         </button>
       {/each}
     </div>
@@ -592,64 +797,104 @@
           <span class="toolbar-dot red"></span>
           <span class="toolbar-dot yellow"></span>
           <span class="toolbar-dot green"></span>
-          <span class="toolbar-filename">{observation?.task_id ?? "snippet"}.txt</span>
+          <span class="toolbar-filename">{codeFilename}</span>
         </div>
-        <pre class="code-block hljs"><code>{@html highlightedCode || " "}</code></pre>
+        <div class="code-block" role="region" aria-label="Code under review">
+          <div class="code-lines">
+            {#each codeLines as line (line.number)}
+              <div class="code-line">
+                <span class="code-line-number">{line.number}</span>
+                <span class="code-line-content hljs">{@html line.html}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
       </div>
     </section>
 
-    <div class="two-col">
-      <section class="panel review-panel">
+    <div class="two-col" class:results-mode={isResultsMode}>
+      <section class="panel review-panel" class:results-compact={isResultsMode}>
         <div class="panel-header">
           <div>
             <div class="panel-label">Submission</div>
-            <h2 class="panel-title">{phaseLabels[currentPhase]}</h2>
+            <h2 class="panel-title">{isResultsMode ? "Episode Submission" : phaseLabels[currentPhase]}</h2>
           </div>
-          <div class="mode-toggle">
-            <button class="mode-btn" class:selected={mode === "review"} on:click={() => mode = "review"}>Review</button>
-            <button class="mode-btn" class:selected={mode === "fix"} on:click={() => mode = "fix"}>Fix</button>
-          </div>
-        </div>
-
-        <div class="submission-note">
-          <div>
-            <strong>Expected action:</strong> {expectedActionType}
-          </div>
-          {#if mode !== expectedActionType}
-            <div class="warning-note">This mode can still be submitted, but the grader may penalize it as off-phase.</div>
+          {#if !isResultsMode}
+            <div class="mode-toggle">
+              <button class="mode-btn" class:selected={mode === "review"} on:click={() => mode = "review"}>Review</button>
+              <button class="mode-btn" class:selected={mode === "fix"} on:click={() => mode = "fix"}>Fix</button>
+            </div>
           {/if}
         </div>
 
-        {#if mode === "review"}
-          <textarea
-            bind:value={reviewText}
-            bind:this={reviewTextareaEl}
-            class="review-textarea"
-            placeholder="Write a focused review for the current step..."
-            spellcheck="false"
-            rows="10"
-            disabled={isEpisodeDone}
-          ></textarea>
-        {:else}
-          <textarea
-            bind:value={fixCode}
-            class="review-textarea code-font"
-            placeholder="Write the corrected code for this scenario..."
-            spellcheck="false"
-            rows="10"
-            disabled={isEpisodeDone}
-          ></textarea>
-        {/if}
+        {#if isResultsMode}
+          <div class="submission-summary">
+            <div class="summary-chip-row">
+              <span class="chip chip-green">Episode total: {formatReward(cumulativeBreakdown.total)}</span>
+              <span class="chip chip-neutral">Backend: {backendLabel}</span>
+              <span class="chip chip-neutral">Steps: {evaluation.stepHistory.length}/3</span>
+              <span class="chip chip-neutral">{restoredFromSnapshot ? "Restored saved run" : "Saved automatically"}</span>
+            </div>
+            <p class="submission-summary-copy">
+              The episode is complete. Use the tabs on the right to inspect the scorecard, signals, history, and auditor view without stretching the page.
+            </p>
+            <div class="summary-action-row">
+              <button class="btn btn-outline" on:click={() => retryTask(currentTaskId)}>Retry Task</button>
+            </div>
+          </div>
 
-        <div class="review-actions">
-          <button class="btn btn-primary" on:click={submitCurrentAction} disabled={isSubmitting || isEpisodeDone}>
-            {isSubmitting ? "Scoring..." : "Submit Step"}
-          </button>
-          <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
-            {isRunningBaseline ? "Running..." : "Run AI Baseline"}
-          </button>
-          <button class="btn btn-ghost" on:click={clearCurrentInput}>Clear</button>
-        </div>
+          <details class="submission-drawer">
+            <summary>Review transcript</summary>
+            <pre class="submission-preview">{combinedReviewText() || reviewText || "No review transcript captured."}</pre>
+          </details>
+
+          {#if fixCode.trim()}
+            <details class="submission-drawer">
+              <summary>Submitted fix</summary>
+              <pre class="submission-preview code-font">{fixCode}</pre>
+            </details>
+          {/if}
+        {:else}
+          <div class="submission-note">
+            <div>
+              <strong>Expected action:</strong> {expectedActionType}
+            </div>
+            {#if mode !== expectedActionType}
+              <div class="warning-note">This mode can still be submitted, but the grader may penalize it as off-phase.</div>
+            {/if}
+          </div>
+
+          {#if mode === "review"}
+            <textarea
+              bind:value={reviewText}
+              bind:this={reviewTextareaEl}
+              class="review-textarea"
+              placeholder="Write a focused review for the current step..."
+              spellcheck="false"
+              rows="10"
+              disabled={isEpisodeDone}
+            ></textarea>
+          {:else}
+            <textarea
+              bind:value={fixCode}
+              class="review-textarea code-font"
+              placeholder="Write the corrected code for this scenario..."
+              spellcheck="false"
+              rows="10"
+              disabled={isEpisodeDone}
+            ></textarea>
+          {/if}
+
+          <div class="review-actions">
+            <button class="btn btn-primary" on:click={submitCurrentAction} disabled={isSubmitting || isEpisodeDone}>
+              {isSubmitting ? "Scoring..." : "Submit Step"}
+            </button>
+            <button class="btn btn-outline" on:click={runBaseline} disabled={isRunningBaseline}>
+              {isRunningBaseline ? "Running..." : "Run AI Baseline"}
+            </button>
+            <button class="btn btn-ghost" on:click={clearCurrentInput}>Clear</button>
+          </div>
+        {/if}
       </section>
 
       <section class="panel eval-panel">
@@ -672,89 +917,115 @@
             <div class="score-subline">Latest step: {formatReward(evaluation.reward)} · {evaluation.currentStep?.verdict?.replaceAll("_", " ") ?? "evaluated"}</div>
           </div>
 
-          <div class="eval-section">
-            <div class="eval-label">Coach Feedback</div>
-            <p class="typewriter-text">{typedNarration}</p>
+          <div class="eval-tabs">
+            {#each evalTabs as tab}
+              <button
+                type="button"
+                class="eval-tab"
+                class:active={activeEvalTab === tab.key}
+                on:click={() => activeEvalTab = tab.key}
+              >
+                {tab.label}
+              </button>
+            {/each}
           </div>
 
-          <div class="eval-section">
-            <div class="eval-label">Reward Breakdown</div>
-            <div class="breakdown-list">
-              {#each breakdownRows as row}
-                <div class="breakdown-row">
-                  <div class="breakdown-head">
-                    <span>{row.label}</span>
-                    <strong>{formatReward(row.value)} / {row.max.toFixed(1)}</strong>
+          {#if activeEvalTab === "overview"}
+            <div class="eval-section">
+              <div class="eval-label">Coach Feedback</div>
+              <p class="typewriter-text">{typedNarration}</p>
+            </div>
+
+            <div class="eval-section">
+              <div class="eval-label">Reward Breakdown</div>
+              <div class="breakdown-list">
+                {#each breakdownRows as row}
+                  <div class="breakdown-row">
+                    <div class="breakdown-head">
+                      <span>{row.label}</span>
+                      <strong>{formatReward(row.value)} / {row.max.toFixed(1)}</strong>
+                    </div>
+                    <div class="breakdown-bar">
+                      <div class="breakdown-fill" style={`width: ${clampPercent(row.value, row.max)}`}></div>
+                    </div>
                   </div>
-                  <div class="breakdown-bar">
-                    <div class="breakdown-fill" style={`width: ${clampPercent(row.value, row.max)}`}></div>
-                  </div>
-                </div>
-              {/each}
+                {/each}
+              </div>
+
+              <div class="meta-chip-row">
+                <span class="chip chip-green">Structure bonus: {formatReward(cumulativeBreakdown.structure_bonus)}</span>
+                <span class="chip chip-red">Irrelevant penalty: {formatReward(cumulativeBreakdown.irrelevant_penalty)}</span>
+                <span class="chip chip-red">Hallucinated fix penalty: {formatReward(cumulativeBreakdown.hallucinated_fix_penalty)}</span>
+              </div>
             </div>
 
-            <div class="meta-chip-row">
-              <span class="chip chip-green">Structure bonus: {formatReward(cumulativeBreakdown.structure_bonus)}</span>
-              <span class="chip chip-red">Irrelevant penalty: {formatReward(cumulativeBreakdown.irrelevant_penalty)}</span>
-              <span class="chip chip-red">Hallucinated fix penalty: {formatReward(cumulativeBreakdown.hallucinated_fix_penalty)}</span>
+            <div class="eval-meta">
+              <div><span>Mode</span><strong>{backendLabel}</strong></div>
+              <div><span>Backend</span><strong>{evaluation.info?.grading_backend ?? "deterministic_v2"}</strong></div>
+              <div><span>Episode</span><strong>{isEpisodeDone ? "Complete" : "In progress"}</strong></div>
             </div>
-          </div>
-
-          <div class="eval-section">
-            <div class="eval-label">Latest Signals</div>
-            <div class="chip-group">
-              {#each listOrFallback(latestMatched, "No strong matches yet") as keyword}
-                <span class="chip chip-green">{keyword}</span>
-              {/each}
+          {:else if activeEvalTab === "signals"}
+            <div class="eval-section">
+              <div class="eval-label">Latest Signals</div>
+              <div class="chip-group">
+                {#each listOrFallback(latestMatched, "No strong matches yet") as keyword}
+                  <span class="chip chip-green">{keyword}</span>
+                {/each}
+              </div>
             </div>
-          </div>
 
-          <div class="eval-section">
-            <div class="eval-label">Missing Signals</div>
-            <div class="chip-group">
-              {#each listOrFallback(latestMissing, "Nothing critical missing") as keyword}
-                <span class="chip chip-red">{keyword}</span>
-              {/each}
+            <div class="eval-section">
+              <div class="eval-label">Missing Signals</div>
+              <div class="chip-group">
+                {#each listOrFallback(latestMissing, "Nothing critical missing") as keyword}
+                  <span class="chip chip-red">{keyword}</span>
+                {/each}
+              </div>
             </div>
-          </div>
-
-          <div class="eval-section">
-            <div class="eval-label">Step History</div>
-            <div class="history-list">
-              {#each evaluation.stepHistory as record}
-                <div class="history-card">
-                  <div class="history-top">
-                    <div>
-                      <strong>{phaseLabels[record.phase]}</strong>
+          {:else if activeEvalTab === "history"}
+            <div class="eval-section history-section">
+              <div class="eval-label">Step History</div>
+              <div class="history-list">
+                {#each evaluation.stepHistory as record, index}
+                  <div class="history-card">
+                    <div class="history-top">
+                      <div>
+                        <strong>{phaseLabels[record.phase]}</strong>
+                        <span>{record.action.type}</span>
+                      </div>
+                      <div class="history-score">{formatReward(record.reward.breakdown.total)}</div>
+                    </div>
+                    <p class="history-copy">{historyPreview(record)}</p>
+                    <div class="history-detail">
+                      <span class="history-detail-label">Coach note</span>
+                      <p>{historyFeedbackPreview(record)}</p>
+                    </div>
+                    <div class="history-footer">
+                      <span>Step {index + 1}</span>
+                      <span>{record.reward.verdict.replaceAll("_", " ")}</span>
                       <span>{record.action.type}</span>
                     </div>
-                    <div class="history-score">{formatReward(record.reward.breakdown.total)}</div>
                   </div>
-                  <p class="history-copy">{record.action.content}</p>
-                  <div class="history-footer">
-                    <span>{record.reward.verdict.replaceAll("_", " ")}</span>
-                    <span>{record.reward.feedback || record.reward.rationale}</span>
-                  </div>
-                </div>
-              {/each}
+                {/each}
+              </div>
             </div>
-          </div>
-
-          <div class="eval-meta">
-            <div><span>Mode</span><strong>{backendLabel}</strong></div>
-            <div><span>Backend</span><strong>{evaluation.info?.grading_backend ?? "deterministic_v2"}</strong></div>
-            <div><span>Episode</span><strong>{isEpisodeDone ? "Complete" : "In progress"}</strong></div>
-          </div>
-
-          {#if secondOpinionText}
-            <div class="eval-section auditor-panel">
-              <div class="eval-label auditor-label">Auditor Second Opinion</div>
-              <p class="auditor-text">{secondOpinionText}</p>
-            </div>
-          {:else if evaluation.stepHistory.length > 0}
-            <button class="btn btn-outline auditor-btn" on:click={getSecondOpinion} disabled={isGettingOpinion}>
-              {isGettingOpinion ? "Consulting..." : "Request Second Opinion"}
-            </button>
+          {:else if activeEvalTab === "opinion"}
+            {#if secondOpinionText}
+              <div class="eval-section auditor-panel">
+                <div class="eval-label auditor-label">Auditor Second Opinion</div>
+                <p class="auditor-text">{secondOpinionText}</p>
+              </div>
+            {:else}
+              <div class="eval-section opinion-empty">
+                <div class="eval-label">Auditor Second Opinion</div>
+                <p>Keep the main scorecard compact, and pull in an auditor only when you want another lens on the submission.</p>
+                {#if evaluation.stepHistory.length > 0}
+                  <button class="btn btn-outline opinion-btn" on:click={getSecondOpinion} disabled={isGettingOpinion}>
+                    {isGettingOpinion ? "Consulting..." : "Request Second Opinion"}
+                  </button>
+                {/if}
+              </div>
+            {/if}
           {/if}
         {:else}
           <div class="empty-eval">
@@ -892,6 +1163,7 @@
   .page-wrapper {
     display: grid;
     grid-template-columns: 300px 1fr;
+    height: calc(100dvh - 56px);
     min-height: calc(100vh - 56px);
   }
 
@@ -1013,6 +1285,37 @@
     font-size: 0.7rem;
     color: var(--text-tertiary);
     padding-left: 16px;
+  }
+
+  .task-saved-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 16px;
+    margin-top: 6px;
+  }
+
+  .task-saved-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 3px 6px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+  }
+
+  .task-saved-badge.completed {
+    color: var(--green);
+    background: var(--green-bg);
+    border-color: rgba(34,197,94,0.22);
+  }
+
+  .task-saved-copy {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
   }
 
   .main-content {
@@ -1208,13 +1511,44 @@
   }
 
   .code-block {
-    margin: 0;
-    padding: 18px;
-    overflow-x: auto;
+    overflow: auto;
+    max-height: min(48vh, 420px);
+    background:
+      linear-gradient(180deg, rgba(59, 130, 246, 0.04), transparent 18%),
+      transparent;
+  }
+
+  .code-lines {
+    min-width: max-content;
+    padding: 16px 0;
     font-family: var(--font-mono);
     font-size: 0.88rem;
-    line-height: 1.75;
-    background: transparent !important;
+    line-height: 1.65;
+  }
+
+  .code-line {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .code-line:hover {
+    background: rgba(255,255,255,0.02);
+  }
+
+  .code-line-number {
+    padding: 0 12px 0 16px;
+    color: var(--text-tertiary);
+    text-align: right;
+    user-select: none;
+    border-right: 1px solid rgba(255,255,255,0.05);
+  }
+
+  .code-line-content {
+    display: block;
+    padding: 0 20px;
+    color: var(--text-primary);
+    white-space: pre;
   }
 
   .two-col {
@@ -1222,6 +1556,10 @@
     grid-template-columns: minmax(360px, 0.92fr) minmax(420px, 1.08fr);
     gap: 16px;
     align-items: start;
+  }
+
+  .two-col.results-mode {
+    grid-template-columns: 1fr;
   }
 
   .review-panel,
@@ -1232,6 +1570,10 @@
   .review-panel {
     position: sticky;
     top: 16px;
+  }
+
+  .review-panel.results-compact {
+    position: static;
   }
 
   .mode-toggle {
@@ -1271,6 +1613,69 @@
 
   .warning-note {
     color: #fbbf24;
+  }
+
+  .submission-summary {
+    padding: 16px 20px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .submission-summary-copy {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+    line-height: 1.6;
+  }
+
+  .summary-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .summary-action-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .submission-drawer {
+    margin: 0 20px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.02);
+    overflow: hidden;
+  }
+
+  .submission-drawer summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 12px 14px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 1px solid transparent;
+  }
+
+  .submission-drawer[open] summary {
+    border-bottom-color: var(--border);
+  }
+
+  .submission-drawer summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .submission-preview {
+    margin: 0;
+    padding: 14px;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    overflow-x: auto;
   }
 
   .review-textarea {
@@ -1370,6 +1775,34 @@
     color: var(--text-secondary);
   }
 
+  .eval-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 20px 14px;
+    border-top: 1px solid var(--border);
+    background: rgba(255,255,255,0.015);
+  }
+
+  .eval-tab {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+
+  .eval-tab.active {
+    border-color: var(--border-hover);
+    background: rgba(255,255,255,0.06);
+    color: var(--text-primary);
+  }
+
   .eval-section {
     padding: 14px 20px;
     border-top: 1px solid var(--border);
@@ -1457,6 +1890,12 @@
     border: 1px solid rgba(34,197,94,0.2);
   }
 
+  .chip-neutral {
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+  }
+
   .chip-red {
     color: var(--red);
     background: var(--red-bg);
@@ -1467,6 +1906,9 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+    max-height: 440px;
+    overflow-y: auto;
+    padding-right: 4px;
   }
 
   .history-card {
@@ -1507,6 +1949,31 @@
     font-size: 0.84rem;
     line-height: 1.6;
     white-space: pre-wrap;
+  }
+
+  .history-detail {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.015);
+  }
+
+  .history-detail-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--accent);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+
+  .history-detail p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.6;
   }
 
   .history-footer {
@@ -1589,6 +2056,22 @@
     border: 1px solid rgba(245, 158, 11, 0.24);
   }
 
+  .opinion-empty {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .opinion-empty p {
+    margin: 0;
+    color: var(--text-secondary);
+    line-height: 1.65;
+  }
+
+  .opinion-btn {
+    width: fit-content;
+  }
+
   .auditor-label {
     color: #fbbf24;
   }
@@ -1604,6 +2087,7 @@
   @media (max-width: 1100px) {
     .page-wrapper {
       grid-template-columns: 1fr;
+      height: auto;
     }
 
     .sidebar {
@@ -1635,6 +2119,11 @@
     .eval-meta,
     .history-footer {
       flex-direction: column;
+    }
+
+    .eval-tabs,
+    .summary-chip-row {
+      align-items: stretch;
     }
 
     .prompt-top,
