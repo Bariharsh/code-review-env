@@ -322,7 +322,7 @@ def _gemini_custom_review(prompt: str) -> dict[str, Any]:
         raise RuntimeError("The google-genai package is not installed.")
 
     api_key = os.environ["GEMINI_API_KEY"]
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(model=model_name, contents=prompt)
     return json.loads(_strip_wrappers(response.text))
