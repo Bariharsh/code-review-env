@@ -14,6 +14,7 @@
   import ScenarioSidebar from "./review-workbench/ScenarioSidebar.svelte";
   import SubmissionPanel from "./review-workbench/SubmissionPanel.svelte";
   import TopBar from "./review-workbench/TopBar.svelte";
+  import { fetchJson } from "../lib/api.js";
   import {
     SOLVED_THRESHOLD,
     TASK_SESSION_STORAGE_KEY,
@@ -326,16 +327,6 @@
       celebrationState = { ...celebrationState, active: false };
       celebrationTimerId = 0;
     }, 3400);
-  }
-
-  async function fetchJson(url, options = {}) {
-    const response = await fetch(url, {
-      headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
-      ...options,
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Request failed.");
-    return data;
   }
 
   function resetEvaluation() {

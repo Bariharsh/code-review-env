@@ -4,6 +4,7 @@
   import ReviewerInputPanel from "./custom-reviewer/ReviewerInputPanel.svelte";
   import ReviewerResultsPanel from "./custom-reviewer/ReviewerResultsPanel.svelte";
   import ReviewerWorkspaceFrame from "./custom-reviewer/ReviewerWorkspaceFrame.svelte";
+  import { fetchJson } from "../lib/api.js";
   import { demoSnippet, emptyCustomReviewResult } from "./custom-reviewer/shared.js";
 
   let language = "auto";
@@ -20,16 +21,6 @@
   $: hasGoal = Boolean(focus.trim());
   $: hasResult = Boolean(result);
   $: pinWorkspaceRail = hasResult || isReviewing;
-
-  async function fetchJson(url, options = {}) {
-    const response = await fetch(url, {
-      headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
-      ...options,
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Request failed.");
-    return data;
-  }
 
   async function reviewSnippet() {
     if (!code.trim()) {

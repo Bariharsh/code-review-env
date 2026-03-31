@@ -30,6 +30,9 @@ BACKEND_ROOT = Path(__file__).resolve().parent
 DATA_PATH = BACKEND_ROOT / "data" / "samples.json"
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 DIST_ROOT = FRONTEND_ROOT / "dist"
+CORS_ALLOW_ORIGIN = "*"
+CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
+CORS_ALLOW_HEADERS = "Content-Type"
 
 
 def build_environment() -> CodeReviewEnvironment:
@@ -169,6 +172,11 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
     """Serve the frontend and a small JSON API."""
 
     server_version = "CodeReviewEnvHTTP/0.2"
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_cors_headers()
+        self.end_headers()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -370,6 +378,7 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         data = path.read_bytes()
         self.send_response(HTTPStatus.OK)
+        self.send_cors_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
@@ -443,6 +452,7 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             "</body></html>"
         ).encode("utf-8")
         self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
+        self.send_cors_headers()
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(message)))
         self.end_headers()
@@ -475,11 +485,19 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
 
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
+        self.send_cors_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
+
+    def send_cors_headers(self) -> None:
+        """Allow browser clients on another origin to call the API."""
+
+        self.send_header("Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN)
+        self.send_header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+        self.send_header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
 
     def send_error_json(self, status: HTTPStatus, message: str) -> None:
         """Write a JSON error response."""
