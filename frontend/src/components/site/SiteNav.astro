@@ -1,0 +1,33 @@
+---
+const { currentPath = "/" } = Astro.props;
+
+const links = [
+  { href: "/", label: "Review Game" },
+  { href: "/reviewer", label: "Custom AI Reviewer" },
+];
+
+const isActive = (href) =>
+  href === "/"
+    ? currentPath === "/"
+    : currentPath === href || currentPath.startsWith(`${href}/`);
+---
+
+<header class="site-nav-shell">
+  <div class="site-nav-inner">
+    <a href="/" class="site-brand">
+      <span class="site-brand-mark">CR</span>
+      <span class="site-brand-copy">
+        <strong>Code Review Env</strong>
+        <small>Hackathon demo workspace</small>
+      </span>
+    </a>
+
+    <nav class="site-nav-links" aria-label="Primary">
+      {links.map((link) => (
+        <a href={link.href} class:list={["site-nav-link", { active: isActive(link.href) }]}>
+          {link.label}
+        </a>
+      ))}
+    </nav>
+  </div>
+</header>

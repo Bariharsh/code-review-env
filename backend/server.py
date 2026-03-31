@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.baseline.run_agent import run_episode_data
+from backend.custom_review import review_custom_code
 from backend.env.ai_grader import ai_second_opinion
 from backend.env.environment import CodeReviewEnvironment
 from backend.env.models import ReviewAction
@@ -196,6 +197,9 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         if self.try_serve_frontend_asset(path):
             return
 
+        if self.try_serve_frontend_route(path):
+            return
+
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
 
     def do_POST(self) -> None:
@@ -226,6 +230,10 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
 
         if path == "/api/second-opinion":
             self.handle_second_opinion(payload)
+            return
+
+        if path == "/api/custom-review":
+            self.handle_custom_review(payload)
             return
 
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
@@ -332,6 +340,26 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             print(f"[ERROR] second-opinion failed: {exc!r}")
             self.send_error_json(HTTPStatus.BAD_GATEWAY, "Second opinion unavailable.")
 
+    def handle_custom_review(self, payload: dict[str, Any]) -> None:
+        """Review a user-submitted code snippet with the AI reviewer."""
+
+        code = str(payload.get("code", "")).rstrip()
+        title = str(payload.get("title", "")).strip()
+        language = str(payload.get("language", "")).strip()
+        focus = str(payload.get("focus", "")).strip()
+
+        if not code.strip():
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "`code` is required.")
+            return
+
+        try:
+            self.send_json(review_custom_code(code, title=title, language=language, focus=focus))
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+        except Exception as exc:
+            print(f"[ERROR] custom-review failed: {exc!r}")
+            self.send_error_json(HTTPStatus.BAD_GATEWAY, "Custom review unavailable.")
+
     def serve_file(self, path: Path) -> None:
         """Serve a static asset."""
 
@@ -375,6 +403,32 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         if file_path.exists() and file_path.is_file():
             self.serve_file(file_path)
             return True
+
+        return False
+
+    def try_serve_frontend_route(self, request_path: str) -> bool:
+        """Serve a built Astro route like /reviewer via its index.html file."""
+
+        if not DIST_ROOT.exists():
+            return False
+
+        relative_path = request_path.strip("/")
+        if not relative_path:
+            return False
+
+        candidates = [
+            (DIST_ROOT / relative_path / "index.html").resolve(),
+            (DIST_ROOT / f"{relative_path}.html").resolve(),
+        ]
+        dist_root = DIST_ROOT.resolve()
+
+        for candidate in candidates:
+            if not candidate.is_relative_to(dist_root):
+                self.send_error_json(HTTPStatus.FORBIDDEN, "Forbidden path.")
+                return True
+            if candidate.exists() and candidate.is_file():
+                self.serve_file(candidate)
+                return True
 
         return False
 

@@ -75,6 +75,33 @@ class ServerHandlerTests(unittest.TestCase):
             [("error", HTTPStatus.BAD_GATEWAY, "Second opinion unavailable.")],
         )
 
+    def test_handle_custom_review_requires_code(self) -> None:
+        handler = HandlerDouble()
+
+        server.CodeReviewSiteHandler.handle_custom_review(
+            handler,
+            {"language": "python", "focus": "security"},
+        )
+
+        self.assertEqual(
+            handler.responses,
+            [("error", HTTPStatus.BAD_REQUEST, "`code` is required.")],
+        )
+
+    def test_handle_custom_review_sanitizes_internal_errors(self) -> None:
+        handler = HandlerDouble()
+
+        with patch("backend.server.review_custom_code", side_effect=RuntimeError("provider timeout")), patch("builtins.print"):
+            server.CodeReviewSiteHandler.handle_custom_review(
+                handler,
+                {"code": "print('hello')", "language": "python"},
+            )
+
+        self.assertEqual(
+            handler.responses,
+            [("error", HTTPStatus.BAD_GATEWAY, "Custom review unavailable.")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

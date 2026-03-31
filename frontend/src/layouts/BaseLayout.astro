@@ -1,7 +1,9 @@
 ---
 import "../styles/global.css";
+import SiteNav from "../components/site/SiteNav.astro";
 
 const { title = "Code Review Environment" } = Astro.props;
+const currentPath = Astro.url.pathname;
 ---
 
 <!doctype html>
@@ -28,6 +30,7 @@ const { title = "Code Review Environment" } = Astro.props;
     <title>{title}</title>
   </head>
   <body>
+    <SiteNav currentPath={currentPath} />
     <slot />
   </body>
 </html>
