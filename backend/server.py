@@ -496,7 +496,7 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the HTTP server."""
 
     parser = argparse.ArgumentParser(description="Run the Code Review Environment website.")
-    parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
+    parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind.")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on.")
     return parser.parse_args()
 
