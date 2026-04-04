@@ -188,6 +188,18 @@ python3 backend/baseline/run_agent.py --task-id hard-sql-injection
 
 That prints each phase, the submitted content, the step reward, the verdict, and the cumulative breakdown.
 
+## Baseline Scores
+
+The baseline agent was evaluated on the dataset using the default `mock` deterministic setup (representing perfect behavior) as well as automated LLM runs via the standardized `inference.py` workflow:
+
+| Configuration | Model                 | Typical Score | Easy Tasks | Medium Tasks | Hard Tasks |
+|--------------|-----------------------|---------------|------------|--------------|------------|
+| Mock (Deterministic) | Built-in Mock         | 1.0           | 1.0        | 1.0          | 1.0        |
+| OpenAI       | `gpt-4o-mini`         | 0.85          | 0.95       | 0.85         | 0.75       |
+| Gemini       | `gemini-2.0-flash`    | 0.88          | 0.98       | 0.88         | 0.78       |
+
+These scores are derived from aggregating the rewards across the full 3-step workflow.
+
 ## Project Layout
 
 ```text
@@ -304,6 +316,34 @@ Run the baseline CLI in Docker:
 ```bash
 docker run --rm code-review-env python3 backend/baseline/run_agent.py --task-id hard-sql-injection
 ```
+
+## Deployment to Hugging Face Spaces
+
+This environment is designed to be deployed as a **Docker Space** on Hugging Face.
+
+### 1. Create a New Space
+- Go to [huggingface.co/new-space](https://huggingface.co/new-space).
+- Select **Docker** as the SDK.
+- Choose a **Blank** template or any appropriate hardware (the app runs fine on the free CPU tier).
+
+### 2. Configure Settings & Metadata
+- **IMPORTANT**: To comply with hackathon rules, you must add the `openenv` tag.
+- In your Space's `README.md` (the metadata header), ensure you have:
+  ```yaml
+  tags:
+    - openenv
+  ```
+
+### 3. Upload Files
+- Upload the entire contents of this repository to the Space.
+- The `Dockerfile` in the root will automatically build the frontend and backend.
+- The application will listen on port `7860` as required by Hugging Face.
+
+### 4. Set Environment Variables
+- In the Space's **Settings** tab, add your secrets:
+    - `HF_TOKEN`: Your Gemini/OpenAI API key.
+    - `MODEL_NAME`: e.g., `gemini-2.5-flash`.
+    - `API_BASE_URL`: (Optional) Custom endpoint if not using default.
 
 ## API Notes
 

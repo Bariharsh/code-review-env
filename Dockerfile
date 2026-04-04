@@ -15,8 +15,8 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
-# Copy root requirements and install
-COPY requirements.txt .
+# Copy backend requirements and install
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the python backend code
@@ -25,8 +25,8 @@ COPY backend/ ./backend/
 # Copy the built frontend artifacts from Stage 1 into the location expected by backend/server.py
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Expose the API and Web Server port
-EXPOSE 8000
+# Expose the default port for Hugging Face Spaces (Docker SDK)
+EXPOSE 7860
 
-# Start the web server and API
-CMD ["python", "backend/server.py"]
+# Start the web server on the required port
+CMD ["python", "backend/server.py", "--host", "0.0.0.0", "--port", "7860"]
