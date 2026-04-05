@@ -3,20 +3,16 @@ import os
 import json
 from typing import List, Optional
 
-try:
-    from google import genai
-except ImportError:
-    genai = None
-
+from openai import AsyncOpenAI
 from backend.env.environment import CodeReviewEnvironment
 from backend.env.models import ReviewAction, CodeReviewObservation, StepRecord
 
 from dotenv import load_dotenv
 load_dotenv()
 
-API_BASE_URL = os.getenv("API_BASE_URL", "") # Unused by Gemini natively, kept for hackathon spec
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash") # Use Gemini by default!
-HF_TOKEN = os.getenv("HF_TOKEN") # Uses this as Gemini key instead
+API_BASE_URL = os.getenv("API_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini") 
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 BENCHMARK = "code-review-env"
 
@@ -67,37 +63,41 @@ def build_prompt(observation: CodeReviewObservation, history: List[StepRecord]) 
         "Do not mention the phase names in your answer."
     )
 
-def get_model_message(client, observation: CodeReviewObservation, history: List[StepRecord]) -> str:
-    if client is None:
-        raise ValueError("GenAI client is missing, cannot generate message")
-
+async def get_model_message(client: AsyncOpenAI, observation: CodeReviewObservation, history: List[StepRecord]) -> str:
     user_prompt = build_prompt(observation, history)
-    
     SYSTEM_PROMPT = "You are a code review agent."
     
     try:
-        response = client.models.generate_content(
+        response = await client.chat.completions.create(
             model=MODEL_NAME,
-            contents=os.linesep.join([SYSTEM_PROMPT, user_prompt])
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1
         )
-        text = response.text.strip() if response.text else "hello"
-        return text if text else "hello"
+        text = response.choices[0].message.content.strip() if response.choices[0].message.content else "hello"
+        return text
     except Exception as exc:
         print(f"[DEBUG] Model request failed: {exc}", flush=True)
         return "hello"
 
-
-def main():
-    if genai is None:
-        print("To run inference, you must install google-genai (e.g. pip install google-genai)")
+async def main():
+    if not HF_TOKEN:
+        print("HF_TOKEN (API Key) is missing from environment variables.")
         return
-        
-    client = genai.Client(api_key=HF_TOKEN)
+
+    # Initialize OpenAI client
+    # Note: api_key is required. base_url is optional but used by hackathon if provided.
+    client = AsyncOpenAI(
+        api_key=HF_TOKEN,
+        base_url=API_BASE_URL if API_BASE_URL else None
+    )
+    
     env = CodeReviewEnvironment()
     
     # Iterate over all tasks
     for task_id in env.task_ids():
-        history: List[str] = []
         rewards: List[float] = []
         steps_taken = 0
         score = 0.0
@@ -108,12 +108,12 @@ def main():
         try:
             observation = env.reset(task_id=task_id)
             done = False
-            error = None
             step = 1
 
             while not done:
+                error = None
                 try:
-                    action_content = get_model_message(client, observation, env.state().history)
+                    action_content = await get_model_message(client, observation, env.state().history)
                     action = ReviewAction(type=observation.expected_action_type, content=action_content)
                     
                     next_obs, reward, done, info = env.step(action)
@@ -122,8 +122,6 @@ def main():
                     steps_taken = step
                     
                     log_step(step=step, action=action_content, reward=reward, done=done, error=error)
-                    
-                    history.append(f"Step {step}: {action_content!r} -> reward {reward:+.2f}")
                     
                     observation = next_obs
                     step += 1
@@ -140,4 +138,4 @@ def main():
             log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -1,0 +1,18 @@
+[project]
+name = "code-review-env"
+version = "0.2.0"
+description = "A multi-step AI training environment for code review benchmarking."
+authors = [{ name = "Hackathon Participant" }]
+dependencies = [
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "openenv-core>=0.2.0"
+]
+requires-python = ">=3.10"
+
+[project.scripts]
+server = "backend.server:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
