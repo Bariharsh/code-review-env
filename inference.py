@@ -46,26 +46,45 @@ def build_prompt(observation: CodeReviewObservation, history: List[StepRecord]) 
     )
     history_block = prior_steps if prior_steps else "- None yet."
 
+    phase = observation.phase
+    if phase == "identify_bug":
+        instruction = "Goal: Name the core bug, security issue, or faulty behavior. Be specific about the root cause and line number if possible. Focus on what is broken."
+    elif phase == "explain_issue":
+        instruction = "Goal: Explain why this bug matters. Focus on system impact (e.g., 'This allows SQL injection' or 'This causes an O(N^2) complexity'). Describe the blast radius."
+    elif phase == "fix_code":
+        instruction = "Goal: Provide the corrected code. It MUST be a complete, runnable replacement. Do not add markdown backticks if possible, just the raw code code snippet."
+    else:
+        instruction = observation.prompt
+
     response_style = (
-        "Return corrected code only."
+        "Return corrected code ONLY. No prose."
         if observation.expected_action_type == "fix"
-        else "Return 1-3 concise sentences focused only on this step."
+        else "Return exactly 1-2 concise, highly technical sentences. No fluff, no 'Sure!', no 'Here is the review'."
     )
 
     return (
-        "You are a senior code reviewer acting inside a 3-step training environment.\n"
-        f"Current phase: {observation.phase}\n"
-        f"Instruction: {observation.prompt}\n"
-        f"Expected action type: {observation.expected_action_type}\n"
-        f"Code:\n{observation.code}\n\n"
-        f"Prior steps:\n{history_block}\n\n"
+        "You are an elite software auditor acting inside a 3-step OpenEnv training benchmark. Accuracy and conciseness are paramount.\n\n"
+        f"SCENARIO TITLE: {observation.title}\n"
+        f"DIFFICULTY: {observation.difficulty}\n"
+        f"CURRENT PHASE: {phase}\n"
+        f"SPECIFIC INSTRUCTION: {instruction}\n"
+        f"EXPECTED ACTION TYPE: {observation.expected_action_type}\n\n"
+        "CODE TO AUDIT:\n"
+        "```\n"
+        f"{observation.code}\n"
+        "```\n\n"
+        f"PRIOR STEPS (for context):\n{history_block}\n\n"
+        "--- MANDATORY CONSTRAINT ---\n"
         f"{response_style}\n"
-        "Do not mention the phase names in your answer."
+        "Do not mention phase names. Avoid conversational filler."
     )
 
 async def get_model_message(client: AsyncOpenAI, observation: CodeReviewObservation, history: List[StepRecord]) -> str:
     user_prompt = build_prompt(observation, history)
-    SYSTEM_PROMPT = "You are a code review agent."
+    SYSTEM_PROMPT = (
+        "You are a robotic technical auditor. You provide high-density, precise feedback on code vulnerabilities and performance. "
+        "You never use conversational filler. You follow instructions to the letter."
+    )
     
     try:
         response = await client.chat.completions.create(
@@ -74,13 +93,24 @@ async def get_model_message(client: AsyncOpenAI, observation: CodeReviewObservat
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.1
+            temperature=0.0
         )
-        text = response.choices[0].message.content.strip() if response.choices[0].message.content else "hello"
-        return text
+        text = response.choices[0].message.content.strip() if response.choices[0].message.content else ""
+        
+        # Strip markdown code blocks if the model included them in a "fix" action
+        if observation.expected_action_type == "fix":
+            if text.startswith("```"):
+                lines = text.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                text = "\n".join(lines).strip()
+        
+        return text if text else "Bug found."
     except Exception as exc:
         print(f"[DEBUG] Model request failed: {exc}", flush=True)
-        return "hello"
+        return "Bug found."
 
 async def main():
     if not HF_TOKEN:

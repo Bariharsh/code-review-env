@@ -30,6 +30,9 @@ const currentPath = Astro.url.pathname;
     <title>{title}</title>
   </head>
   <body>
+    <div class="hero-glow-container" aria-hidden="true">
+      <div class="hero-glow"></div>
+    </div>
     <SiteNav currentPath={currentPath} />
     <slot />
   </body>
