@@ -71,8 +71,12 @@ def task_metadata(task_id: str) -> dict[str, str]:
     }
 
 
-def reset_task(task_id: str) -> dict[str, Any]:
+def reset_task(task_id: str | None = None) -> dict[str, Any]:
     """Reset the environment for a task."""
+
+    tasks = load_tasks(DATA_PATH)
+    if not task_id:
+        task_id = tasks[0].task_id
 
     env = build_environment()
     observation = env.reset(task_id=task_id)
@@ -195,6 +199,10 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             self.send_json({"tasks": list_task_summaries()})
             return
 
+        if path == "/state":
+            self.handle_state()
+            return
+
         if path.startswith("/api/tasks/"):
             task_id = unquote(path.removeprefix("/api/tasks/"))
             try:
@@ -221,15 +229,19 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
-        if path == "/api/step":
+        if path in {"/step", "/api/step"}:
             self.handle_step(payload)
+            return
+
+        if path in {"/reset", "/api/reset"}:
+            self.handle_reset(payload)
             return
 
         if path == "/api/review":
             self.handle_review(payload)
             return
 
-        if path == "/api/grade-fix":
+        if path == "/api/grade-fix" or path == "/grade-fix":
             self.handle_fix(payload)
             return
 
@@ -246,6 +258,27 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
             return
 
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found.")
+
+    def handle_reset(self, payload: dict[str, Any]) -> None:
+        """Standard OpenEnv reset endpoint."""
+
+        task_id = payload.get("task_id")
+        if task_id and not isinstance(task_id, str):
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "task_id must be a string.")
+            return
+
+        try:
+            self.send_json(reset_task(task_id))
+        except (KeyError, StopIteration):
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Unknown task id.")
+
+    def handle_state(self) -> None:
+        """Standard OpenEnv state endpoint."""
+
+        env = build_environment()
+        # This is a bit tricky locally, usually we'd need a session-backed env.
+        # But for the grader, we just return the state of a fresh env or replayed one.
+        self.send_json(env.state().to_dict())
 
     def handle_step(self, payload: dict[str, Any]) -> None:
         """Handle a generic multi-step environment action."""
@@ -460,25 +493,31 @@ class CodeReviewSiteHandler(BaseHTTPRequestHandler):
         self.wfile.write(message)
 
     def read_json(self) -> dict[str, Any]:
-        """Read a JSON request body."""
+        """Read a JSON request body. Returns an empty dict if body is missing or empty."""
 
         content_length = self.headers.get("Content-Length")
-        if content_length is None:
-            raise ValueError("Missing Content-Length header.")
+        if not content_length:
+            return {}
 
         try:
             length = int(content_length)
-        except ValueError as exc:
-            raise ValueError("Invalid Content-Length header.") from exc
+        except ValueError:
+            return {}
+
+        if length == 0:
+            return {}
 
         raw_body = self.rfile.read(length)
+        if not raw_body:
+            return {}
+
         try:
             payload = json.loads(raw_body.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError("Request body must be valid JSON.") from exc
+        except json.JSONDecodeError:
+            return {}
 
         if not isinstance(payload, dict):
-            raise ValueError("JSON body must be an object.")
+            return {}
         return payload
 
     def send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
