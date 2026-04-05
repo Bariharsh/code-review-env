@@ -34,8 +34,13 @@
   --radius-lg: 16px;
   --radius-xl: 20px;
   
-  --primary-glow: rgba(59, 130, 246, 0.1);
-  --secondary-glow: rgba(139, 92, 246, 0.08);
+  --accent: #0ea5e9; /* Cerulean Blue base */
+  --accent-teal: #0d9488;
+  --accent-saffron: #f59e0b;
+  
+  --primary-glow: rgba(14, 165, 233, 0.12); /* Cerulean */
+  --secondary-glow: rgba(13, 148, 136, 0.1); /* Teal */
+  --saffron-glow: rgba(245, 158, 11, 0.15); /* Saffron */
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -51,6 +56,7 @@ body {
   background: var(--bg-root);
   background-image: 
     radial-gradient(circle at 50% -20%, var(--primary-glow) 0%, transparent 50%),
+    radial-gradient(circle at 100% 0%, var(--saffron-glow) 0%, transparent 30%),
     radial-gradient(circle at 0% 0%, var(--secondary-glow) 0%, transparent 35%);
   background-attachment: fixed;
   color: var(--text-primary);
@@ -112,12 +118,12 @@ button, input, textarea, select { font: inherit; }
   border-radius: 12px;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), var(--accent-teal));
   color: #fff;
   font-weight: 800;
   font-size: 0.8rem;
   letter-spacing: 0.05em;
-  box-shadow: 0 0 20px rgba(139, 92, 246, 0.3);
+  box-shadow: 0 0 20px rgba(13, 148, 136, 0.3);
 }
 
 .site-brand-copy {
@@ -217,6 +223,27 @@ button, input, textarea, select { font: inherit; }
   transform: translateX(-50%);
   width: 800px;
   height: 400px;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%);
+  background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);
   filter: blur(80px);
 }
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.05); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes heartbeat {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 var(--accent-glow); }
+  70% { transform: scale(1.1); box-shadow: 0 0 0 10px transparent; }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 transparent; }
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { 
+  background: rgba(255, 255, 255, 0.08); 
+  border-radius: 4px;
+  border: 2px solid var(--bg-root);
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
