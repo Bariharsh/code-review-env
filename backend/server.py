@@ -6,6 +6,7 @@ import mimetypes
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
