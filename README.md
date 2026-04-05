@@ -1,3 +1,13 @@
+---
+title: Code Review OpenEnv
+emoji: 🔍
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+tags:
+  - openenv
+---
+
 # Code Review OpenEnv Environment
 
 `code-review-env` is a multi-step AI training environment for realistic code review practice. Instead of treating code review as a single free-form answer, it teaches the full workflow teams actually need:
