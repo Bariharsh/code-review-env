@@ -33,19 +33,19 @@ def aggregate_breakdowns(rewards: Iterable[RewardState]) -> ScoreBreakdown:
 
     breakdown = ScoreBreakdown()
     for reward in rewards:
-        breakdown.bug_detected = round(breakdown.bug_detected + reward.breakdown.bug_detected, 3)
-        breakdown.explanation = round(breakdown.explanation + reward.breakdown.explanation, 3)
-        breakdown.fix = round(breakdown.fix + reward.breakdown.fix, 3)
-        breakdown.structure_bonus = round(breakdown.structure_bonus + reward.breakdown.structure_bonus, 3)
+        breakdown.bug_detected = round(breakdown.bug_detected + reward.breakdown.bug_detected, 4)
+        breakdown.explanation = round(breakdown.explanation + reward.breakdown.explanation, 4)
+        breakdown.fix = round(breakdown.fix + reward.breakdown.fix, 4)
+        breakdown.structure_bonus = round(breakdown.structure_bonus + reward.breakdown.structure_bonus, 4)
         breakdown.irrelevant_penalty = round(
             breakdown.irrelevant_penalty + reward.breakdown.irrelevant_penalty,
-            3,
+            4,
         )
         breakdown.hallucinated_fix_penalty = round(
             breakdown.hallucinated_fix_penalty + reward.breakdown.hallucinated_fix_penalty,
-            3,
+            4,
         )
-        breakdown.total = round(breakdown.total + reward.breakdown.total, 3)
+        breakdown.total = round(breakdown.total + reward.breakdown.total, 4)
     breakdown.total = clamp_strict_score(breakdown.total)
     return breakdown
 

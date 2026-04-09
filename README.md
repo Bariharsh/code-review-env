@@ -95,7 +95,7 @@ Task Dataset (backend/data/samples.json)
 
 ## Reward System
 
-Each episode is worth up to `1.0` total reward:
+Each episode is capped strictly below `1.0` total reward to satisfy OpenEnv validator rules:
 
 - `+0.3` bug detection
 - `+0.3` explanation quality
@@ -114,9 +114,9 @@ The grader returns a transparent breakdown such as:
   "bug_detected": 0.3,
   "explanation": 0.2,
   "fix": 0.4,
-  "structure_bonus": 0.0,
-  "irrelevant_penalty": 0.0,
-  "hallucinated_fix_penalty": 0.0,
+  "structure_bonus": 0.0001,
+  "irrelevant_penalty": -0.0001,
+  "hallucinated_fix_penalty": -0.0001,
   "total": 0.9
 }
 ```
@@ -204,7 +204,7 @@ The baseline agent was evaluated on the dataset using the default `mock` determi
 
 | Configuration | Model                 | Typical Score | Easy Tasks | Medium Tasks | Hard Tasks |
 |--------------|-----------------------|---------------|------------|--------------|------------|
-| Mock (Deterministic) | Built-in Mock         | 1.0           | 1.0        | 1.0          | 1.0        |
+| Mock (Deterministic) | Built-in Mock         | 0.999         | 0.999      | 0.999        | 0.999      |
 | OpenAI       | `gpt-4o-mini`         | 0.85          | 0.95       | 0.85         | 0.75       |
 | Gemini       | `gemini-2.0-flash`    | 0.88          | 0.98       | 0.88         | 0.78       |
 

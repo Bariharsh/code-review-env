@@ -72,6 +72,31 @@ class AggregateBreakdownTests(unittest.TestCase):
         self.assertGreater(breakdown.total, 0.0)
         self.assertLess(breakdown.total, 1.0)
 
+    def test_cumulative_breakdown_serialization_avoids_zero_components(self) -> None:
+        rewards = [
+            RewardState(
+                score=0.001,
+                verdict="wrong",
+                breakdown=ScoreBreakdown(
+                    bug_detected=0.0001,
+                    explanation=0.0001,
+                    fix=0.0001,
+                    structure_bonus=0.0001,
+                    irrelevant_penalty=-0.0001,
+                    hallucinated_fix_penalty=-0.0001,
+                    total=0.001,
+                ),
+            )
+            for _ in range(3)
+        ]
+
+        payload = aggregate_breakdowns(rewards).to_dict()
+
+        self.assertEqual(payload["bug_detected"], 0.0003)
+        self.assertEqual(payload["structure_bonus"], 0.0003)
+        self.assertEqual(payload["irrelevant_penalty"], -0.0003)
+        self.assertEqual(payload["hallucinated_fix_penalty"], -0.0003)
+
 
 if __name__ == "__main__":
     unittest.main()

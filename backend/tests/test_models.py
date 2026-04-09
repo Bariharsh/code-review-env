@@ -67,6 +67,17 @@ class ScoreSerializationTests(unittest.TestCase):
 
         self.assertEqual(payload["cumulative_reward"], 0.001)
 
+    def test_breakdown_serialization_avoids_exact_zero_metrics(self) -> None:
+        payload = ScoreBreakdown().to_dict()
+
+        self.assertEqual(payload["bug_detected"], 0.0001)
+        self.assertEqual(payload["explanation"], 0.0001)
+        self.assertEqual(payload["fix"], 0.0001)
+        self.assertEqual(payload["structure_bonus"], 0.0001)
+        self.assertEqual(payload["irrelevant_penalty"], -0.0001)
+        self.assertEqual(payload["hallucinated_fix_penalty"], -0.0001)
+        self.assertEqual(payload["total"], 0.001)
+
 
 if __name__ == "__main__":
     unittest.main()

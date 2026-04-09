@@ -85,6 +85,8 @@ reward_schema:
           type: number
         total:
           type: number
+          minimum: 0.001
+          maximum: 0.999
     matched_keywords:
       type: array
       items:
@@ -95,6 +97,8 @@ reward_schema:
         type: string
     semantic_overlap:
       type: number
+      minimum: 0.001
+      maximum: 0.999
     rationale:
       type: string
     feedback:

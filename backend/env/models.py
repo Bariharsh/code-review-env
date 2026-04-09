@@ -25,6 +25,9 @@ STRICT_SCORE_MIN = 0.001
 STRICT_SCORE_MAX = 0.999
 STRICT_SCORE_FIELDS = {"score", "cumulative_reward", "semantic_overlap"}
 STRICT_BREAKDOWN_SCORE_FIELDS = {"total"}
+STRICT_BREAKDOWN_POSITIVE_FIELDS = {"bug_detected", "explanation", "fix", "structure_bonus"}
+STRICT_BREAKDOWN_NEGATIVE_FIELDS = {"irrelevant_penalty", "hallucinated_fix_penalty"}
+STRICT_BREAKDOWN_EPSILON = 0.0001
 
 
 def clamp_strict_score(value: float | int) -> float:
@@ -46,11 +49,23 @@ def sanitize_public_scores(value: Any, *, key: str | None = None, parent_key: st
     if isinstance(value, list):
         return [sanitize_public_scores(item, parent_key=key) for item in value]
 
-    if isinstance(value, float):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         if key in STRICT_SCORE_FIELDS:
             return clamp_strict_score(value)
         if key in STRICT_BREAKDOWN_SCORE_FIELDS and parent_key in {"breakdown", "cumulative_breakdown"}:
             return clamp_strict_score(value)
+        if key in STRICT_BREAKDOWN_POSITIVE_FIELDS and parent_key in {"breakdown", "cumulative_breakdown"}:
+            numeric = float(value)
+            if numeric <= 0:
+                return STRICT_BREAKDOWN_EPSILON
+            if numeric >= 1:
+                return STRICT_SCORE_MAX
+            return round(numeric, 4)
+        if key in STRICT_BREAKDOWN_NEGATIVE_FIELDS and parent_key in {"breakdown", "cumulative_breakdown"}:
+            numeric = float(value)
+            if numeric >= 0:
+                return -STRICT_BREAKDOWN_EPSILON
+            return round(numeric, 4)
 
     return value
 
@@ -186,7 +201,7 @@ class ScoreBreakdown:
     total: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        return sanitize_public_scores(asdict(self))
+        return sanitize_public_scores(asdict(self), key="breakdown")
 
 
 @dataclass(slots=True)
