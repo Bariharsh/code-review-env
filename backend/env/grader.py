@@ -385,13 +385,14 @@ def grade_action(task: CodeReviewTask, action: ReviewAction, phase: StepPhase, s
     if hallucinated < 0:
         penalties.append("hallucinated_fix")
 
+    EPS = 0.0001
     breakdown = ScoreBreakdown(
-        bug_detected=positive_score if phase == "identify_bug" else 0.0,
-        explanation=positive_score if phase == "explain_issue" else 0.0,
-        fix=positive_score if phase == "fix_code" else 0.0,
-        structure_bonus=structure,
-        irrelevant_penalty=irrelevant,
-        hallucinated_fix_penalty=hallucinated,
+        bug_detected=max(EPS, positive_score) if phase == "identify_bug" else EPS,
+        explanation=max(EPS, positive_score) if phase == "explain_issue" else EPS,
+        fix=max(EPS, positive_score) if phase == "fix_code" else EPS,
+        structure_bonus=max(EPS, structure),
+        irrelevant_penalty=irrelevant if irrelevant != 0 else -EPS,
+        hallucinated_fix_penalty=hallucinated if hallucinated != 0 else -EPS,
     )
     raw_total = positive_score + structure + irrelevant + hallucinated
     breakdown.total = round(
@@ -415,7 +416,7 @@ def grade_action(task: CodeReviewTask, action: ReviewAction, phase: StepPhase, s
         matched_keywords=matched_keywords,
         missing_keywords=missing_keywords,
         partial_keywords=matched_keywords[:1] if verdict == "partial_match" else [],
-        semantic_overlap=overlap,
+        semantic_overlap=min(max(overlap, 0.001), 0.999),
         rationale=rationale,
         feedback=feedback,
         phase=phase,

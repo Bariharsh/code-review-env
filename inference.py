@@ -148,7 +148,7 @@ async def main():
                     
                     next_obs, reward, done, info = env.step(action)
                     
-                    rewards.append(reward)
+                    rewards.append(min(max(reward, 0.001), 0.999))
                     steps_taken = step
                     
                     log_step(step=step, action=action_content, reward=reward, done=done, error=error)

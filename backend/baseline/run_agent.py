@@ -232,7 +232,7 @@ def run_episode_data(
         submissions.append(
             {
                 "action": action.to_dict(),
-                "reward": reward,
+                "reward": min(max(reward, 0.001), 0.999),
                 "done": done,
                 "step_evaluation": info["step_evaluation"],
             }
@@ -252,7 +252,7 @@ def run_episode_data(
             "",
         ),
         "observation": state.observation.to_dict() if state.observation else None,
-        "reward": round(state.cumulative_reward, 3),
+        "reward": min(max(round(state.cumulative_reward, 3), 0.001), 0.999),
         "done": state.done,
         "info": {
             **final_info,
