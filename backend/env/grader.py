@@ -19,8 +19,8 @@ FIX_WEIGHT = 0.4
 IRRELEVANT_PENALTY = -0.2
 HALLUCINATED_FIX_PENALTY = -0.3
 MAX_STRUCTURE_BONUS = 0.05
-MIN_REWARD = -0.5
-MAX_REWARD = 1.0
+MIN_REWARD = 0.001
+MAX_REWARD = 0.999
 
 STOPWORDS = {
     "a",
@@ -393,12 +393,13 @@ def grade_action(task: CodeReviewTask, action: ReviewAction, phase: StepPhase, s
         irrelevant_penalty=irrelevant,
         hallucinated_fix_penalty=hallucinated,
     )
+    raw_total = positive_score + structure + irrelevant + hallucinated
     breakdown.total = round(
         max(
             MIN_REWARD,
             min(
                 MAX_REWARD,
-                positive_score + structure + irrelevant + hallucinated,
+                raw_total,
             ),
         ),
         3,

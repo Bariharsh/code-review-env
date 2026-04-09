@@ -130,7 +130,7 @@ async def main():
     for task_id in env.task_ids():
         rewards: List[float] = []
         steps_taken = 0
-        score = 0.0
+        score = 0.001
         success = False
 
         log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
@@ -157,7 +157,7 @@ async def main():
                     step += 1
                 except Exception as e:
                     error = str(e)
-                    log_step(step=step, action="", reward=0.0, done=True, error=error)
+                    log_step(step=step, action="", reward=0.001, done=True, error=error)
                     break
             
             score = env.state().cumulative_reward

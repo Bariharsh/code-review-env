@@ -127,7 +127,7 @@ class CodeReviewEnvironment:
             step_count=0,
             max_steps=self.max_steps,
             done=False,
-            cumulative_reward=0.0,
+            cumulative_reward=0.001,
             observation=observation,
             last_reward=None,
             history=[],
@@ -176,6 +176,7 @@ class CodeReviewEnvironment:
 
         history = [*self._state.history, record]
         cumulative_reward = round(self._state.cumulative_reward + reward_state.score, 3)
+        cumulative_reward = min(max(cumulative_reward, 0.001), 0.999)
         cumulative_breakdown = aggregate_breakdowns(item.reward for item in history)
 
         self._state = EnvironmentState(

@@ -63,10 +63,14 @@ def ai_grade_review(task: CodeReviewTask, review: str) -> RewardState | None:
         result = json.loads(raw)
 
         score = float(result.get("score", 0.0))
-        if score not in (0.0, 0.5, 1.0):
-            score = round(score * 2) / 2  # snap to nearest 0.0/0.5/1.0
-
-        verdict_map = {1.0: "full_match", 0.5: "partial_match", 0.0: "wrong"}
+        # Ensure strictly (0, 1)
+        score = min(max(score, 0.0), 1.0)
+        if score == 1.0:
+            score = 0.999
+        elif score == 0.0:
+            score = 0.001
+        
+        verdict_map = {0.999: "full_match", 0.5: "partial_match", 0.001: "wrong"}
 
         return RewardState(
             score=score,
@@ -129,10 +133,14 @@ def ai_grade_fix(task: CodeReviewTask, fixed_code: str) -> RewardState | None:
         result = json.loads(raw)
 
         score = float(result.get("score", 0.0))
-        if score not in (0.0, 0.5, 1.0):
-            score = round(score * 2) / 2
-
-        verdict_map = {1.0: "full_match", 0.5: "partial_match", 0.0: "wrong"}
+        # Ensure strictly (0, 1)
+        score = min(max(score, 0.0), 1.0)
+        if score == 1.0:
+            score = 0.999
+        elif score == 0.0:
+            score = 0.001
+            
+        verdict_map = {0.999: "full_match", 0.5: "partial_match", 0.001: "wrong"}
 
         return RewardState(
             score=score,
