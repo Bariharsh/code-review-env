@@ -276,7 +276,7 @@ def run_episode_data(
 def run_episode(env: CodeReviewEnvironment, task_id: str) -> None:
     """Run one baseline episode and print a detailed transcript."""
 
-    result = run_episode_data(task_id=task_id, data_path=env.data_path, max_steps=env.max_steps)
+    result = run_episode_data(task_id=task_id, data_path=None, max_steps=env.max_steps)
     observation = result["observation"]
     print(f"Task: {task_id}")
 
