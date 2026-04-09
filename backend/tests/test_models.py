@@ -1,6 +1,6 @@
 import unittest
 
-from backend.env.models import ReviewAction, ReviewRubric
+from backend.env.models import EnvironmentState, ReviewAction, ReviewRubric, RewardState, ScoreBreakdown
 
 
 class ReviewActionTests(unittest.TestCase):
@@ -45,6 +45,27 @@ class ReviewRubricTests(unittest.TestCase):
                     }
                 }
             )
+
+
+class ScoreSerializationTests(unittest.TestCase):
+    def test_reward_serialization_clamps_boundary_scores(self) -> None:
+        reward = RewardState(
+            score=1.0,
+            verdict="full_match",
+            breakdown=ScoreBreakdown(total=1.0),
+            semantic_overlap=0.0,
+        )
+
+        payload = reward.to_dict()
+
+        self.assertEqual(payload["score"], 0.999)
+        self.assertEqual(payload["breakdown"]["total"], 0.999)
+        self.assertEqual(payload["semantic_overlap"], 0.001)
+
+    def test_environment_state_serialization_clamps_default_cumulative_reward(self) -> None:
+        payload = EnvironmentState().to_dict()
+
+        self.assertEqual(payload["cumulative_reward"], 0.001)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,9 @@ from .models import (
     RewardState,
     ScoreBreakdown,
     StepPhase,
+    STRICT_SCORE_MAX,
+    STRICT_SCORE_MIN,
+    clamp_strict_score,
 )
 
 
@@ -19,8 +22,8 @@ FIX_WEIGHT = 0.4
 IRRELEVANT_PENALTY = -0.2
 HALLUCINATED_FIX_PENALTY = -0.3
 MAX_STRUCTURE_BONUS = 0.05
-MIN_REWARD = 0.001
-MAX_REWARD = 0.999
+MIN_REWARD = STRICT_SCORE_MIN
+MAX_REWARD = STRICT_SCORE_MAX
 
 STOPWORDS = {
     "a",
@@ -395,16 +398,7 @@ def grade_action(task: CodeReviewTask, action: ReviewAction, phase: StepPhase, s
         hallucinated_fix_penalty=hallucinated if hallucinated != 0 else -EPS,
     )
     raw_total = positive_score + structure + irrelevant + hallucinated
-    breakdown.total = round(
-        max(
-            MIN_REWARD,
-            min(
-                MAX_REWARD,
-                raw_total,
-            ),
-        ),
-        3,
-    )
+    breakdown.total = clamp_strict_score(raw_total)
 
     rationale, feedback = build_feedback(phase, matched_keywords, missing_keywords, penalties)
     verdict = verdict_for_score(breakdown.total, phase)
@@ -416,7 +410,7 @@ def grade_action(task: CodeReviewTask, action: ReviewAction, phase: StepPhase, s
         matched_keywords=matched_keywords,
         missing_keywords=missing_keywords,
         partial_keywords=matched_keywords[:1] if verdict == "partial_match" else [],
-        semantic_overlap=min(max(overlap, 0.001), 0.999),
+        semantic_overlap=clamp_strict_score(overlap),
         rationale=rationale,
         feedback=feedback,
         phase=phase,

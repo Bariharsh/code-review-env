@@ -21,6 +21,39 @@ EXPECTED_ACTION_BY_PHASE: dict[StepPhase, ActionType] = {
     "fix_code": "fix",
 }
 
+STRICT_SCORE_MIN = 0.001
+STRICT_SCORE_MAX = 0.999
+STRICT_SCORE_FIELDS = {"score", "cumulative_reward", "semantic_overlap"}
+STRICT_BREAKDOWN_SCORE_FIELDS = {"total"}
+
+
+def clamp_strict_score(value: float | int) -> float:
+    """Clamp a public-facing score into the validator-safe open interval."""
+
+    numeric = float(value)
+    return round(min(max(numeric, STRICT_SCORE_MIN), STRICT_SCORE_MAX), 3)
+
+
+def sanitize_public_scores(value: Any, *, key: str | None = None, parent_key: str | None = None) -> Any:
+    """Recursively clamp score-like fields in serialized payloads."""
+
+    if isinstance(value, dict):
+        return {
+            child_key: sanitize_public_scores(child_value, key=child_key, parent_key=key)
+            for child_key, child_value in value.items()
+        }
+
+    if isinstance(value, list):
+        return [sanitize_public_scores(item, parent_key=key) for item in value]
+
+    if isinstance(value, float):
+        if key in STRICT_SCORE_FIELDS:
+            return clamp_strict_score(value)
+        if key in STRICT_BREAKDOWN_SCORE_FIELDS and parent_key in {"breakdown", "cumulative_breakdown"}:
+            return clamp_strict_score(value)
+
+    return value
+
 
 def _string_list(value: Any, field_name: str) -> list[str]:
     """Validate and normalize a list of keyword strings."""
@@ -153,7 +186,7 @@ class ScoreBreakdown:
     total: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return sanitize_public_scores(asdict(self))
 
 
 @dataclass(slots=True)
@@ -184,7 +217,7 @@ class RewardState:
     matched_keywords: list[str] = field(default_factory=list)
     missing_keywords: list[str] = field(default_factory=list)
     partial_keywords: list[str] = field(default_factory=list)
-    semantic_overlap: float = 0.0
+    semantic_overlap: float = STRICT_SCORE_MIN
     rationale: str = ""
     feedback: str = ""
     phase: StepPhase = "identify_bug"
@@ -193,7 +226,7 @@ class RewardState:
     step_index: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return sanitize_public_scores(asdict(self))
 
 
 @dataclass(slots=True)
@@ -207,7 +240,7 @@ class StepRecord:
     reward: RewardState
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return sanitize_public_scores(asdict(self))
 
 
 @dataclass(slots=True)
@@ -218,13 +251,13 @@ class EnvironmentState:
     step_count: int = 0
     max_steps: int = len(PHASE_SEQUENCE)
     done: bool = False
-    cumulative_reward: float = 0.0
+    cumulative_reward: float = STRICT_SCORE_MIN
     observation: CodeReviewObservation | None = None
     last_reward: RewardState | None = None
     history: list[StepRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return sanitize_public_scores(asdict(self))
 
 
 @dataclass(slots=True)

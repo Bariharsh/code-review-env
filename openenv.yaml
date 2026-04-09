@@ -63,8 +63,8 @@ reward_schema:
   properties:
     score:
       type: number
-      minimum: -0.5
-      maximum: 1.0
+      minimum: 0.001
+      maximum: 0.999
     verdict:
       type: string
       enum: [full_match, partial_match, wrong]

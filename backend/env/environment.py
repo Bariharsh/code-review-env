@@ -15,6 +15,8 @@ from .models import (
     ScoreBreakdown,
     StepPhase,
     StepRecord,
+    STRICT_SCORE_MIN,
+    clamp_strict_score,
 )
 from .tasks import get_task_by_id, load_tasks
 
@@ -44,6 +46,7 @@ def aggregate_breakdowns(rewards: Iterable[RewardState]) -> ScoreBreakdown:
             3,
         )
         breakdown.total = round(breakdown.total + reward.breakdown.total, 3)
+    breakdown.total = clamp_strict_score(breakdown.total)
     return breakdown
 
 
@@ -127,7 +130,7 @@ class CodeReviewEnvironment:
             step_count=0,
             max_steps=self.max_steps,
             done=False,
-            cumulative_reward=0.001,
+            cumulative_reward=STRICT_SCORE_MIN,
             observation=observation,
             last_reward=None,
             history=[],
@@ -175,8 +178,7 @@ class CodeReviewEnvironment:
         )
 
         history = [*self._state.history, record]
-        cumulative_reward = round(self._state.cumulative_reward + reward_state.score, 3)
-        cumulative_reward = min(max(cumulative_reward, 0.001), 0.999)
+        cumulative_reward = clamp_strict_score(self._state.cumulative_reward + reward_state.score)
         cumulative_breakdown = aggregate_breakdowns(item.reward for item in history)
 
         self._state = EnvironmentState(

@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from openai import AsyncOpenAI
 from backend.env.environment import CodeReviewEnvironment
-from backend.env.models import ReviewAction, CodeReviewObservation, StepRecord
+from backend.env.models import ReviewAction, CodeReviewObservation, StepRecord, clamp_strict_score
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -148,20 +148,20 @@ async def main():
                     
                     next_obs, reward, done, info = env.step(action)
                     
-                    rewards.append(min(max(reward, 0.001), 0.999))
+                    rewards.append(clamp_strict_score(reward))
                     steps_taken = step
                     
-                    log_step(step=step, action=action_content, reward=reward, done=done, error=error)
+                    log_step(step=step, action=action_content, reward=clamp_strict_score(reward), done=done, error=error)
                     
                     observation = next_obs
                     step += 1
                 except Exception as e:
                     error = str(e)
-                    log_step(step=step, action="", reward=0.001, done=True, error=error)
+                    log_step(step=step, action="", reward=clamp_strict_score(0.0), done=True, error=error)
                     break
             
             score = env.state().cumulative_reward
-            score = min(max(score, 0.001), 0.999)  # clamp to (0, 1) strictly
+            score = clamp_strict_score(score)
             success = score >= 0.7  # Define success threshold
 
         finally:

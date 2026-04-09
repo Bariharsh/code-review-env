@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.env.environment import CodeReviewEnvironment, aggregate_breakdowns
-from backend.env.models import CodeReviewObservation, ReviewAction, StepRecord
+from backend.env.models import CodeReviewObservation, ReviewAction, StepRecord, clamp_strict_score
 
 try:
     from openai import OpenAI
@@ -232,7 +232,7 @@ def run_episode_data(
         submissions.append(
             {
                 "action": action.to_dict(),
-                "reward": min(max(reward, 0.001), 0.999),
+                "reward": clamp_strict_score(reward),
                 "done": done,
                 "step_evaluation": info["step_evaluation"],
             }
@@ -252,7 +252,7 @@ def run_episode_data(
             "",
         ),
         "observation": state.observation.to_dict() if state.observation else None,
-        "reward": min(max(round(state.cumulative_reward, 3), 0.001), 0.999),
+        "reward": clamp_strict_score(state.cumulative_reward),
         "done": state.done,
         "info": {
             **final_info,

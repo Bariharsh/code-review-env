@@ -1,7 +1,8 @@
 import unittest
 
+from backend.env.environment import aggregate_breakdowns
 from backend.env.grader import HALLUCINATED_FIX_PENALTY, grade_action, normalize_text, signal_matches
-from backend.env.models import CodeReviewTask, ReviewAction, ReviewRubric
+from backend.env.models import CodeReviewTask, ReviewAction, ReviewRubric, RewardState, ScoreBreakdown
 
 
 class SignalMatchesTests(unittest.TestCase):
@@ -53,8 +54,23 @@ class FixScoringTests(unittest.TestCase):
             2,
         )
 
-        self.assertEqual(reward.breakdown.fix, 0.0)
+        self.assertEqual(reward.breakdown.fix, 0.0001)
         self.assertEqual(reward.breakdown.hallucinated_fix_penalty, HALLUCINATED_FIX_PENALTY)
+
+
+class AggregateBreakdownTests(unittest.TestCase):
+    def test_cumulative_total_stays_strictly_below_one(self) -> None:
+        rewards = [
+            RewardState(score=0.3, verdict="full_match", breakdown=ScoreBreakdown(total=0.3)),
+            RewardState(score=0.3, verdict="full_match", breakdown=ScoreBreakdown(total=0.3)),
+            RewardState(score=0.4, verdict="full_match", breakdown=ScoreBreakdown(total=0.4)),
+        ]
+
+        breakdown = aggregate_breakdowns(rewards)
+
+        self.assertEqual(breakdown.total, 0.999)
+        self.assertGreater(breakdown.total, 0.0)
+        self.assertLess(breakdown.total, 1.0)
 
 
 if __name__ == "__main__":
