@@ -234,7 +234,7 @@ def run_episode_data(
                 "action": action.to_dict(),
                 "reward": clamp_strict_score(reward),
                 "done": done,
-                "step_evaluation": info["step_evaluation"],
+                "score_details": info.get("score_details", {}),
             }
         )
         final_info = info
@@ -247,7 +247,7 @@ def run_episode_data(
             "action": {"type": "review", "content": "Failed to generate action"},
             "reward": clamp_strict_score(0.0),
             "done": True,
-            "step_evaluation": {}
+            "score_details": {}
         })
 
     final_action = submissions[-1]["action"] if submissions else {"type": "review", "content": ""}
@@ -276,28 +276,23 @@ def run_episode_data(
 def run_episode(env: CodeReviewEnvironment, task_id: str) -> None:
     """Run one baseline episode and print a detailed transcript."""
 
-    observation = env.reset(task_id=task_id)
-    backend = "mock"
+    result = run_episode_data(task_id=task_id, data_path=env.data_path, max_steps=env.max_steps)
+    observation = result["observation"]
+    print(f"Task: {task_id}")
 
-    print(f"Task: {observation.task_id} ({observation.difficulty})")
-    while not env.state().done:
-        action, backend = generate_action(observation, env.state().history)
-        observation, reward, done, info = env.step(action)
-        print(f"Phase: {info['step_evaluation']['phase']}")
-        print(f"Action type: {action.type}")
-        print("Submitted content:")
-        print(action.content)
-        print(f"Reward: {reward:.3f}")
-        print(f"Verdict: {info['step_evaluation']['verdict']}")
-        print(f"Breakdown: {info['step_evaluation']['breakdown']}")
+    for submission in result["submissions"]:
+        action_dict = submission["action"]
+        info = submission.get("score_details", {})
+        print(f"\nStep evaluated.")
+        print(f"Phase: {info.get('phase', 'unknown')}")
+        print("-" * 20)
+        print(f"Action ({action_dict.get('type')}): {action_dict.get('content')}")
+        print(f"Reward: {submission['reward']}")
+        print(f"Verdict: {info.get('verdict', 'unknown')}")
+        print(f"Breakdown: {info.get('breakdown', {})}")
         print("-" * 60)
-        if done:
-            break
-
-    summary = aggregate_breakdowns(record.reward for record in env.state().history)
-    print(f"Backend: {backend}")
-    print(f"Cumulative reward: {env.state().cumulative_reward:.3f}")
-    print(f"Cumulative breakdown: {summary.to_dict()}")
+    print(f"Cumulative reward: {result['reward']:.3f}")
+    print(f"Cumulative breakdown: {result['info']['cumulative_breakdown']}")
     print("=" * 60)
 
 
