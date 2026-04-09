@@ -1,6 +1,7 @@
 import unittest
+from dataclasses import asdict
 
-from backend.env.environment import aggregate_breakdowns
+from backend.env.environment import CodeReviewEnvironment, aggregate_breakdowns
 from backend.env.grader import HALLUCINATED_FIX_PENALTY, grade_action, normalize_text, signal_matches
 from backend.env.models import CodeReviewTask, ReviewAction, ReviewRubric, RewardState, ScoreBreakdown
 
@@ -96,6 +97,35 @@ class AggregateBreakdownTests(unittest.TestCase):
         self.assertEqual(payload["structure_bonus"], 0.0003)
         self.assertEqual(payload["irrelevant_penalty"], -0.0003)
         self.assertEqual(payload["hallucinated_fix_penalty"], -0.0003)
+
+    def test_raw_environment_state_has_no_boundary_scores_after_episode(self) -> None:
+        env = CodeReviewEnvironment()
+        observation = env.reset("easy-even-check")
+
+        env.step(ReviewAction(type=observation.expected_action_type, content="n % 2 == 1"))
+        observation = env.state().observation
+        self.assertIsNotNone(observation)
+        env.step(ReviewAction(type=observation.expected_action_type, content="false for even inputs"))
+        observation = env.state().observation
+        self.assertIsNotNone(observation)
+        env.step(ReviewAction(type=observation.expected_action_type, content="def is_even(n: int) -> bool:\n    return n % 2 == 0\n"))
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                for value in obj.values():
+                    yield from walk(value)
+            elif isinstance(obj, list):
+                for value in obj:
+                    yield from walk(value)
+            elif isinstance(obj, float):
+                yield obj
+
+        payload = asdict(env.state())
+        floats = list(walk(payload))
+
+        self.assertNotIn(0.0, floats)
+        self.assertNotIn(1.0, floats)
+        self.assertNotIn(-0.0, floats)
 
 
 if __name__ == "__main__":

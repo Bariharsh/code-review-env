@@ -17,6 +17,7 @@ from .models import (
     StepRecord,
     STRICT_SCORE_MIN,
     clamp_strict_score,
+    zero_score_breakdown,
 )
 from .tasks import get_task_by_id, load_tasks
 
@@ -31,7 +32,7 @@ PHASE_PROMPTS: dict[StepPhase, str] = {
 def aggregate_breakdowns(rewards: Iterable[RewardState]) -> ScoreBreakdown:
     """Aggregate multiple step rewards into a single transparent score view."""
 
-    breakdown = ScoreBreakdown()
+    breakdown = zero_score_breakdown()
     for reward in rewards:
         breakdown.bug_detected = round(breakdown.bug_detected + reward.breakdown.bug_detected, 4)
         breakdown.explanation = round(breakdown.explanation + reward.breakdown.explanation, 4)

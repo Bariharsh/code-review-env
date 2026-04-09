@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import asdict
 
 from backend.env.models import EnvironmentState, ReviewAction, ReviewRubric, RewardState, ScoreBreakdown
 
@@ -77,6 +78,14 @@ class ScoreSerializationTests(unittest.TestCase):
         self.assertEqual(payload["irrelevant_penalty"], -0.0001)
         self.assertEqual(payload["hallucinated_fix_penalty"], -0.0001)
         self.assertEqual(payload["total"], 0.001)
+
+    def test_raw_dataclass_defaults_avoid_exact_zero_scores(self) -> None:
+        breakdown_payload = asdict(ScoreBreakdown())
+        reward_payload = asdict(RewardState(score=0.5, verdict="partial_match"))
+
+        self.assertEqual(breakdown_payload["total"], 0.001)
+        self.assertEqual(reward_payload["breakdown"]["total"], 0.001)
+        self.assertEqual(reward_payload["semantic_overlap"], 0.001)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,34 @@ def clamp_strict_score(value: float | int) -> float:
     return round(min(max(numeric, STRICT_SCORE_MIN), STRICT_SCORE_MAX), 3)
 
 
+def default_score_breakdown() -> "ScoreBreakdown":
+    """Return a validator-safe placeholder breakdown for public reward objects."""
+
+    return ScoreBreakdown(
+        bug_detected=STRICT_BREAKDOWN_EPSILON,
+        explanation=STRICT_BREAKDOWN_EPSILON,
+        fix=STRICT_BREAKDOWN_EPSILON,
+        structure_bonus=STRICT_BREAKDOWN_EPSILON,
+        irrelevant_penalty=-STRICT_BREAKDOWN_EPSILON,
+        hallucinated_fix_penalty=-STRICT_BREAKDOWN_EPSILON,
+        total=STRICT_SCORE_MIN,
+    )
+
+
+def zero_score_breakdown() -> "ScoreBreakdown":
+    """Return a neutral breakdown for internal accumulation math."""
+
+    return ScoreBreakdown(
+        bug_detected=0.0,
+        explanation=0.0,
+        fix=0.0,
+        structure_bonus=0.0,
+        irrelevant_penalty=0.0,
+        hallucinated_fix_penalty=0.0,
+        total=0.0,
+    )
+
+
 def sanitize_public_scores(value: Any, *, key: str | None = None, parent_key: str | None = None) -> Any:
     """Recursively clamp score-like fields in serialized payloads."""
 
@@ -192,13 +220,13 @@ class ReviewAction:
 class ScoreBreakdown:
     """Weighted reward components for a single step."""
 
-    bug_detected: float = 0.0
-    explanation: float = 0.0
-    fix: float = 0.0
-    structure_bonus: float = 0.0
-    irrelevant_penalty: float = 0.0
-    hallucinated_fix_penalty: float = 0.0
-    total: float = 0.0
+    bug_detected: float = STRICT_BREAKDOWN_EPSILON
+    explanation: float = STRICT_BREAKDOWN_EPSILON
+    fix: float = STRICT_BREAKDOWN_EPSILON
+    structure_bonus: float = STRICT_BREAKDOWN_EPSILON
+    irrelevant_penalty: float = -STRICT_BREAKDOWN_EPSILON
+    hallucinated_fix_penalty: float = -STRICT_BREAKDOWN_EPSILON
+    total: float = STRICT_SCORE_MIN
 
     def to_dict(self) -> dict[str, Any]:
         return sanitize_public_scores(asdict(self), key="breakdown")
@@ -228,7 +256,7 @@ class RewardState:
 
     score: float
     verdict: Verdict
-    breakdown: ScoreBreakdown = field(default_factory=ScoreBreakdown)
+    breakdown: ScoreBreakdown = field(default_factory=default_score_breakdown)
     matched_keywords: list[str] = field(default_factory=list)
     missing_keywords: list[str] = field(default_factory=list)
     partial_keywords: list[str] = field(default_factory=list)
