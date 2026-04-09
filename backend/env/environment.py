@@ -16,8 +16,8 @@ from .models import (
     StepPhase,
     StepRecord,
     STRICT_SCORE_MIN,
+    STRICT_BREAKDOWN_EPSILON,
     clamp_strict_score,
-    zero_score_breakdown,
 )
 from .tasks import get_task_by_id, load_tasks
 
@@ -32,23 +32,35 @@ PHASE_PROMPTS: dict[StepPhase, str] = {
 def aggregate_breakdowns(rewards: Iterable[RewardState]) -> ScoreBreakdown:
     """Aggregate multiple step rewards into a single transparent score view."""
 
-    breakdown = zero_score_breakdown()
+    bug_detected = 0.0
+    explanation = 0.0
+    fix = 0.0
+    structure_bonus = 0.0
+    irrelevant_penalty = 0.0
+    hallucinated_fix_penalty = 0.0
+    total = 0.0
+
     for reward in rewards:
-        breakdown.bug_detected = round(breakdown.bug_detected + reward.breakdown.bug_detected, 4)
-        breakdown.explanation = round(breakdown.explanation + reward.breakdown.explanation, 4)
-        breakdown.fix = round(breakdown.fix + reward.breakdown.fix, 4)
-        breakdown.structure_bonus = round(breakdown.structure_bonus + reward.breakdown.structure_bonus, 4)
-        breakdown.irrelevant_penalty = round(
-            breakdown.irrelevant_penalty + reward.breakdown.irrelevant_penalty,
+        bug_detected = round(bug_detected + reward.breakdown.bug_detected, 4)
+        explanation = round(explanation + reward.breakdown.explanation, 4)
+        fix = round(fix + reward.breakdown.fix, 4)
+        structure_bonus = round(structure_bonus + reward.breakdown.structure_bonus, 4)
+        irrelevant_penalty = round(irrelevant_penalty + reward.breakdown.irrelevant_penalty, 4)
+        hallucinated_fix_penalty = round(
+            hallucinated_fix_penalty + reward.breakdown.hallucinated_fix_penalty,
             4,
         )
-        breakdown.hallucinated_fix_penalty = round(
-            breakdown.hallucinated_fix_penalty + reward.breakdown.hallucinated_fix_penalty,
-            4,
-        )
-        breakdown.total = round(breakdown.total + reward.breakdown.total, 4)
-    breakdown.total = clamp_strict_score(breakdown.total)
-    return breakdown
+        total = round(total + reward.breakdown.total, 4)
+
+    return ScoreBreakdown(
+        bug_detected=max(STRICT_BREAKDOWN_EPSILON, bug_detected),
+        explanation=max(STRICT_BREAKDOWN_EPSILON, explanation),
+        fix=max(STRICT_BREAKDOWN_EPSILON, fix),
+        structure_bonus=max(STRICT_BREAKDOWN_EPSILON, structure_bonus),
+        irrelevant_penalty=min(-STRICT_BREAKDOWN_EPSILON, irrelevant_penalty),
+        hallucinated_fix_penalty=min(-STRICT_BREAKDOWN_EPSILON, hallucinated_fix_penalty),
+        total=clamp_strict_score(total),
+    )
 
 
 class CodeReviewEnvironment:
