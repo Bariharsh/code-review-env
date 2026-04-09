@@ -157,7 +157,9 @@ async def main():
                     step += 1
                 except Exception as e:
                     error = str(e)
-                    log_step(step=step, action="", reward=clamp_strict_score(0.0), done=True, error=error)
+                    fallback_reward = clamp_strict_score(0.0)
+                    log_step(step=step, action="", reward=fallback_reward, done=True, error=error)
+                    rewards.append(fallback_reward)
                     break
             
             score = env.state().cumulative_reward
@@ -165,6 +167,8 @@ async def main():
             success = score >= 0.7  # Define success threshold
 
         finally:
+            if not rewards:
+                rewards.append(clamp_strict_score(0.0))
             log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 if __name__ == "__main__":

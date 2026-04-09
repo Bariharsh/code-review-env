@@ -241,6 +241,15 @@ def run_episode_data(
 
     state = env.state()
     cumulative_breakdown = aggregate_breakdowns(record.reward for record in state.history)
+    
+    if not submissions:
+        submissions.append({
+            "action": {"type": "review", "content": "Failed to generate action"},
+            "reward": clamp_strict_score(0.0),
+            "done": True,
+            "step_evaluation": {}
+        })
+
     final_action = submissions[-1]["action"] if submissions else {"type": "review", "content": ""}
 
     return {
