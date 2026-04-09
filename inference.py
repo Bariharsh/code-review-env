@@ -161,7 +161,7 @@ async def main():
                     break
             
             score = env.state().cumulative_reward
-            score = min(max(score, 0.0), 1.0)  # clamp to [0, 1]
+            score = min(max(score, 0.001), 0.999)  # clamp to (0, 1) strictly
             success = score >= 0.7  # Define success threshold
 
         finally:
